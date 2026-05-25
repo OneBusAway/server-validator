@@ -49,6 +49,9 @@ func dataSourceChecks() []DataSourceCheck {
 }
 
 func prepare(ctx context.Context, cfg config.Config) (*ValidationContext, error) {
+	if cfg.MaxConcurrency <= 0 {
+		cfg.MaxConcurrency = 4
+	}
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
 	httpClient := &http.Client{Timeout: timeout}
 

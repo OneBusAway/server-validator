@@ -89,3 +89,41 @@ func TestRunEndToEndNoFail(t *testing.T) {
 		}
 	}
 }
+
+func TestRunZeroMaxConcurrencyDoesNotDeadlock(t *testing.T) {
+	zipBytes := miniGTFSZip(t)
+	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(zipBytes)
+	}))
+	defer feedSrv.Close()
+	obaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "current-time"):
+			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
+		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
+			w.Write([]byte(`{"data":{"list":[{"agencyId":"1"}],"references":{"agencies":[{"id":"1","name":"Metro"}]}}}`))
+		default:
+			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
+		}
+	}))
+	defer obaSrv.Close()
+
+	cfg := config.Config{
+		OBAServerURL: obaSrv.URL, APIKey: "test",
+		SampleSize: 3, RTFreshnessSeconds: 300, LocationSpan: 0.01, TimeoutSeconds: 30,
+		NoCache: true,
+		// MaxConcurrency intentionally left at 0 to exercise the guard.
+		DataSources: []config.DataSource{
+			{StaticGtfsFeedURL: feedSrv.URL + "/gtfs.zip", AgencyMapping: map[string]string{"KCM": "1"}},
+			{StaticGtfsFeedURL: feedSrv.URL + "/gtfs.zip", AgencyMapping: map[string]string{"KCM": "1"}},
+		},
+	}
+	rep, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("expected results")
+	}
+}
