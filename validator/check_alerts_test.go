@@ -3,7 +3,6 @@ package validator
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 
 	gtfs "github.com/OneBusAway/go-gtfs"
@@ -12,57 +11,19 @@ import (
 )
 
 func TestServiceAlertFoundInSituationIDs(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "arrivals-and-departures-for-stop") {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1","situationIds":["1_ALERT1"]}]}}}`))
-			return
-		}
-		t.Errorf("unexpected path %s", r.URL.Path)
-	})
-	src := &SourceContext{
-		Label:      "ds0",
-		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
-		PrepErrors: map[string]error{},
-		Static:     staticForVehicle(),
-		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
-			ID:               "ALERT1",
-			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
-		}}},
-	}
+	client := arrivalsClient(t, `{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1","situationIds":["1_ALERT1"]}]}}}`)
 	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
-	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
-	if len(results) == 0 || results[0].Status != Pass {
-		t.Errorf("want Pass, got %+v", results)
-	}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, alertSrcForStop())
+	assertFirstStatus(t, results, Pass, "alert in situationIds")
 }
 
 // A `null` arrivals response (nil SDK response, nil error) must not be mistaken
 // for "stop has no situations" and Fail — it is an unconfirmed query, so Warn.
 func TestServiceAlertNullArrivalsResponseWarns(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "arrivals-and-departures-for-stop") {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`null`))
-			return
-		}
-		t.Errorf("unexpected path %s", r.URL.Path)
-	})
-	src := &SourceContext{
-		Label:      "ds0",
-		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
-		PrepErrors: map[string]error{},
-		Static:     staticForVehicle(),
-		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
-			ID:               "ALERT1",
-			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
-		}}},
-	}
+	client := arrivalsClient(t, `null`)
 	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
-	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
-	if len(results) == 0 || results[0].Status != Warn {
-		t.Errorf("null arrivals response: want Warn, got %+v", results)
-	}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, alertSrcForStop())
+	assertFirstStatus(t, results, Warn, "null arrivals response")
 }
 
 func TestServiceAlertNoSamplableWarns(t *testing.T) {
@@ -75,109 +36,36 @@ func TestServiceAlertNoSamplableWarns(t *testing.T) {
 	}
 	vc := &ValidationContext{Config: cfgForTest("test")}
 	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
-	if results[0].Status != Warn {
-		t.Errorf("agency-only alert not stop-referenceable: want Warn got %v", results[0].Status)
-	}
+	assertFirstStatus(t, results, Warn, "agency-only alert not stop-referenceable")
 }
 
 func TestServiceAlertNoSituationsFails(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "arrivals-and-departures-for-stop") {
-			w.Header().Set("Content-Type", "application/json")
-			// Arrivals present but NO situations at all, though the feed says this stop is affected.
-			w.Write([]byte(`{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1"}]}}}`))
-			return
-		}
-		t.Errorf("unexpected path %s", r.URL.Path)
-	})
-	src := &SourceContext{
-		Label:      "ds0",
-		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
-		PrepErrors: map[string]error{},
-		Static:     staticForVehicle(),
-		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
-			ID:               "ALERT1",
-			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
-		}}},
-	}
+	// Arrivals present but NO situations at all, though the feed says this stop is affected.
+	client := arrivalsClient(t, `{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1"}]}}}`)
 	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
-	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
-	if len(results) == 0 || results[0].Status != Fail {
-		t.Errorf("affected stop with no situations should Fail, got %+v", results)
-	}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, alertSrcForStop())
+	assertFirstStatus(t, results, Fail, "affected stop with no situations")
 }
 
 func TestServiceAlertSituationsButNoMatchWarns(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "arrivals-and-departures-for-stop") {
-			w.Header().Set("Content-Type", "application/json")
-			// Situations exist but none match the feed alert id.
-			w.Write([]byte(`{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1","situationIds":["1_DIFFERENT"]}]}}}`))
-			return
-		}
-		t.Errorf("unexpected path %s", r.URL.Path)
-	})
-	src := &SourceContext{
-		Label:      "ds0",
-		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
-		PrepErrors: map[string]error{},
-		Static:     staticForVehicle(),
-		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
-			ID:               "ALERT1",
-			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
-		}}},
-	}
+	// Situations exist but none match the feed alert id.
+	client := arrivalsClient(t, `{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1","situationIds":["1_DIFFERENT"]}]}}}`)
 	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
-	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
-	if len(results) == 0 || results[0].Status != Warn {
-		t.Errorf("situations present but no match should Warn, got %+v", results)
-	}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, alertSrcForStop())
+	assertFirstStatus(t, results, Warn, "situations present but no match")
 }
 
 func TestServiceAlertFoundInGlobalReferences(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "arrivals-and-departures-for-stop") {
-			w.Header().Set("Content-Type", "application/json")
-			// situationIds empty on the arrival, but the alert IS in references.situations
-			w.Write([]byte(`{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1"}]},"references":{"situations":[{"id":"1_ALERT1"}]}}}`))
-			return
-		}
-		t.Errorf("unexpected path %s", r.URL.Path)
-	})
-	src := &SourceContext{
-		Label:      "ds0",
-		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
-		PrepErrors: map[string]error{},
-		Static:     staticForVehicle(),
-		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
-			ID:               "ALERT1",
-			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
-		}}},
-	}
+	// situationIds empty on the arrival, but the alert IS in references.situations.
+	client := arrivalsClient(t, `{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1"}]},"references":{"situations":[{"id":"1_ALERT1"}]}}}`)
 	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
-	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
-	if len(results) == 0 || results[0].Status != Pass {
-		t.Errorf("alert in global references.situations should Pass, got %+v", results)
-	}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, alertSrcForStop())
+	assertFirstStatus(t, results, Pass, "alert in global references.situations")
 }
 
 func TestServiceAlert404StopWarns(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	src := &SourceContext{
-		Label:      "ds0",
-		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
-		PrepErrors: map[string]error{},
-		Static:     staticForVehicle(),
-		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
-			ID:               "ALERT1",
-			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
-		}}},
-	}
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) })
 	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
-	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
-	if len(results) == 0 || results[0].Status != Warn {
-		t.Errorf("404 on stop should Warn (not Fail), got %+v", results)
-	}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, alertSrcForStop())
+	assertFirstStatus(t, results, Warn, "404 on stop should Warn not Fail")
 }
