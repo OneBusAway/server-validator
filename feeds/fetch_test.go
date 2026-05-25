@@ -54,3 +54,23 @@ func TestFetchStaticUsesConditionalGET(t *testing.T) {
 		t.Errorf("static hits=%d want 2 (a 200 then a 304)", hits)
 	}
 }
+
+func TestFetchStaticTTLServesWithoutNetwork(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Write([]byte("DATA")) // no ETag, no Last-Modified
+	}))
+	defer srv.Close()
+	f := NewFetcher(srv.Client(), NewCache(t.TempDir(), time.Hour), false, false)
+
+	if _, err := f.FetchStatic(context.Background(), srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.FetchStatic(context.Background(), srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Errorf("hits=%d want 1 (second call served from cache via TTL)", hits)
+	}
+}

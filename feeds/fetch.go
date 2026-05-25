@@ -11,14 +11,14 @@ import (
 // Fetcher downloads feeds. Static feeds go through the conditional-GET Cache;
 // realtime feeds are always fetched fresh.
 type Fetcher struct {
-	http    *http.Client
+	client  *http.Client
 	cache   *Cache
 	noCache bool
 	refresh bool
 }
 
 func NewFetcher(httpClient *http.Client, cache *Cache, noCache, refresh bool) *Fetcher {
-	return &Fetcher{http: httpClient, cache: cache, noCache: noCache, refresh: refresh}
+	return &Fetcher{client: httpClient, cache: cache, noCache: noCache, refresh: refresh}
 }
 
 func (f *Fetcher) get(ctx context.Context, url string, hdr http.Header) (*http.Response, error) {
@@ -31,7 +31,7 @@ func (f *Fetcher) get(ctx context.Context, url string, hdr http.Header) (*http.R
 			req.Header.Add(k, v)
 		}
 	}
-	return f.http.Do(req)
+	return f.client.Do(req)
 }
 
 // FetchRealtime always performs a fresh GET (no caching).

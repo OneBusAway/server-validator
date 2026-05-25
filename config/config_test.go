@@ -62,3 +62,15 @@ func TestLoadErrors(t *testing.T) {
 		t.Error("expected missing obaServerURL error")
 	}
 }
+
+func TestLoadValidationErrors(t *testing.T) {
+	// Ensure the env fallback can't satisfy apiKey for the missing-apiKey case.
+	t.Setenv("ONEBUSAWAY_API_KEY", "")
+
+	if _, err := Load(`{"obaServerURL":"https://x","dataSources":[{"staticGtfsFeedURL":"u"}]}`); err == nil {
+		t.Error("expected missing-apiKey error")
+	}
+	if _, err := Load(`{"obaServerURL":"https://x","apiKey":"k"}`); err == nil {
+		t.Error("expected missing-dataSources error")
+	}
+}
