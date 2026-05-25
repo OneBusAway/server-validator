@@ -1,0 +1,14 @@
+# Render Blueprint: deploy oba-validator as a Docker cron job that effectively
+# never runs on its own. Trigger real validations as one-off jobs against this
+# service, passing the whole config (including apiKey) as a base64-encoded start
+# command: `/app/entrypoint.sh <base64-config>`. See "Deploying to Render" in the
+# README.
+services:
+  - type: cron
+    name: oba-validator
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Feb 29 02:00 UTC — fires at most once every ~4 years, i.e. virtually never.
+    schedule: "0 2 29 2 *"
+    # Cron jobs are not available on the free tier; adjust to taste.
+    plan: starter

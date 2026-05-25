@@ -47,12 +47,63 @@ os.Exit(rep.ExitCode())
 
 ## Development
 
-    make build       # compile to bin/oba-validator
-    make test        # run unit tests (no network)
+    make build         # compile to bin/oba-validator
+    make test          # run unit tests (no network)
     make run ARGS=config.json
-    make test-live   # env-gated live test against the real server
+    make test-live     # env-gated live test against the real server
+    make docker-build  # build the deployment image
 
 Run `make` with no target to build. See the `Makefile` for all targets.
 
-See `docs/superpowers/specs/2026-05-24-oba-validator-design.md` for the full
-design.
+## Deploying to Render
+
+The validator deploys to [Render](https://render.com) as a Docker **cron job**
+whose schedule (`0 2 29 2 *`, Feb 29 02:00 UTC) makes it effectively never run on
+its own. Real validations are launched on demand as **one-off jobs** against the
+service, with the entire config — including `apiKey` — passed as the start
+command. Nothing server-specific is baked into the image, so one deployment can
+validate any OBA server.
+
+Build the image locally to verify it (the container accepts raw JSON directly):
+
+    make docker-build
+    docker run --rm oba-validator '{"obaServerURL":"https://api.pugetsound.onebusaway.org","apiKey":"org.onebusaway.iphone","dataSources":[{"agencyMapping":{"KCM":"1"},"staticGtfsFeedURL":"https://metro.kingcounty.gov/GTFS/google_transit.zip","vehiclePositionsURL":"https://s3.amazonaws.com/kcm-alerts-realtime-prod/vehiclepositions.pb"}]}'
+
+Deploy by pointing a Render Blueprint at `render.yaml`, or create the cron job by
+hand in the dashboard (Docker runtime, the schedule above, no environment
+variables needed).
+
+### Triggering a validation (one-off job)
+
+Render runs a one-off job's start command by **splitting it on whitespace and
+passing it as argv — there is no shell**, and the first token is used as the
+executable. A JSON config can't be passed inline (it has spaces and special
+characters), so **base64-encode the config** into a single token and let the
+image's `entrypoint.sh` decode it. The start command is:
+
+    /app/entrypoint.sh <base64-of-compact-config-json>
+
+Produce the token from your config (note the `apiKey` lives *in* the config — it
+is never baked into the image, since keys differ per server):
+
+    printf '%s' '{"obaServerURL":"https://api.example.org","apiKey":"your-key","dataSources":[{"agencyMapping":{"X":"1"},"staticGtfsFeedURL":"https://.../gtfs.zip","vehiclePositionsURL":"https://.../vp.pb"}]}' | base64 | tr -d '\n'
+
+Trigger it via the API (base64 is plain `[A-Za-z0-9+/=]`, so no escaping needed):
+
+    curl --request POST 'https://api.render.com/v1/services/<service-id>/jobs' \
+      --header 'Authorization: Bearer <render-api-key>' \
+      --header 'Content-Type: application/json' \
+      --data-raw '{"startCommand": "/app/entrypoint.sh <base64-config>"}'
+
+From Ruby (e.g. an obacloud job), this mirrors the existing pattern:
+
+    encoded = Base64.strict_encode64(config.to_json)
+    start_command = "/app/entrypoint.sh #{encoded}"
+
+Validator flags go after the token (`/app/entrypoint.sh <base64> --json`). The
+job's exit status is the validator's exit code (`0` no failures, `1` ≥1 failure,
+`2` config/usage error), so a failed validation shows as a failed run.
+
+See `docs/superpowers/specs/2026-05-24-oba-validator-design.md` for the validator
+design and `docs/superpowers/specs/2026-05-25-render-deployment-design.md` for the
+deployment design.

@@ -1,8 +1,9 @@
 BINARY := oba-validator
 PKG    := ./cmd/oba-validator
 BIN    := bin/$(BINARY)
+IMAGE  := oba-validator
 
-.PHONY: all build test test-live vet fmt run clean tidy install
+.PHONY: all build test test-live vet fmt run clean tidy install docker-build
 
 all: build
 
@@ -37,6 +38,10 @@ tidy:
 ## install: install the CLI into GOBIN
 install:
 	go install $(PKG)
+
+## docker-build: build the deployment image (see render.yaml)
+docker-build:
+	docker build -t $(IMAGE) .
 
 ## clean: remove build artifacts
 clean:

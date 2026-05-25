@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same branch/PR to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test & lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean (run 'make fmt'):" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Check go.mod/go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: go mod verify
+        run: go mod verify
+
+      - name: Test with race detector
+        run: go test -race ./...
+
+      - name: Shellcheck entrypoint.sh
+        run: shellcheck entrypoint.sh
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build image
+        run: make docker-build
+
+      - name: Smoke test the entrypoint
+        run: |
+          # base64 of "{}" decodes to an (incomplete) JSON config, so the chain
+          # entrypoint.sh -> oba-validator -> config.Load runs entirely offline and
+          # must exit 2 (config error). This proves the image is wired correctly
+          # without depending on a live OBA server or feeds.
+          token=$(printf '%s' '{}' | base64)
+          set +e
+          output=$(docker run --rm oba-validator "$token" 2>&1)
+          code=$?
+          set -e
+          echo "$output"
+          if [ "$code" -ne 2 ]; then
+            echo "expected exit 2 (config error), got $code" >&2
+            exit 1
+          fi
