@@ -41,7 +41,7 @@ func (serviceAlertCheck) Run(ctx context.Context, vc *ValidationContext, src *So
 	sample := sampleByID(usable, vc.Config.SampleSize, func(s sampleAlert) string { return s.alert.ID })
 
 	agency := ""
-	if len(src.Static.AgencyIDs) > 0 {
+	if src.Static != nil && len(src.Static.AgencyIDs) > 0 {
 		agency, _ = src.MapAgency(src.Static.AgencyIDs[0])
 	}
 

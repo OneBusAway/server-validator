@@ -39,11 +39,13 @@ func (tripUpdateSamplingCheck) Run(ctx context.Context, vc *ValidationContext, s
 	var out []Result
 	for _, tr := range sample {
 		agency := ""
-		if gid, ok := src.Static.AgencyForTrip(tr.ID.ID); ok {
-			agency, _ = src.MapAgency(gid)
-		} else if tr.ID.RouteID != "" {
-			if gid, ok := src.Static.AgencyForRoute(tr.ID.RouteID); ok {
+		if src.Static != nil {
+			if gid, ok := src.Static.AgencyForTrip(tr.ID.ID); ok {
 				agency, _ = src.MapAgency(gid)
+			} else if tr.ID.RouteID != "" {
+				if gid, ok := src.Static.AgencyForRoute(tr.ID.RouteID); ok {
+					agency, _ = src.MapAgency(gid)
+				}
 			}
 		}
 
