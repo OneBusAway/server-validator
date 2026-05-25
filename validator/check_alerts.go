@@ -50,8 +50,8 @@ func (serviceAlertCheck) Run(ctx context.Context, vc *ValidationContext, src *So
 		obaStop := PrefixedID(agency, s.rawStop)
 		ad, err := vc.Client.ArrivalAndDeparture.List(ctx, obaStop, onebusaway.ArrivalAndDepartureListParams{})
 		if err != nil {
-			out = append(out, Result{Check: name, Source: src.Label, Status: Fail,
-				Message: fmt.Sprintf("arrivals-and-departures-for-stop %q failed: %s", obaStop, redact(err, key))})
+			out = append(out, Result{Check: name, Source: src.Label, Status: Warn,
+				Message: fmt.Sprintf("could not query stop %q (agency prefix may be wrong): %s", obaStop, redact(err, key))})
 			continue
 		}
 		anySituation := false

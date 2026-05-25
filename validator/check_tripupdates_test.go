@@ -82,3 +82,24 @@ func TestTripUpdateSamplingNilStaticNoPanic(t *testing.T) {
 	// Must not panic.
 	_ = tripUpdateSamplingCheck{}.Run(context.Background(), vc, src)
 }
+
+func TestTripUpdateSampling404StopWarns(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	src := &SourceContext{
+		Label:      "ds0",
+		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
+		PrepErrors: map[string]error{},
+		Static:     staticForVehicle(),
+		TripUpdates: &gtfs.Realtime{Trips: []gtfs.Trip{{
+			ID:              gtfs.TripID{ID: "T1", RouteID: "R1"},
+			StopTimeUpdates: []gtfs.StopTimeUpdate{{StopID: strp("ST1"), Arrival: &gtfs.StopTimeEvent{}}},
+		}}},
+	}
+	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
+	results := tripUpdateSamplingCheck{}.Run(context.Background(), vc, src)
+	if len(results) == 0 || results[0].Status != Warn {
+		t.Errorf("404 on stop should Warn (not Fail), got %+v", results)
+	}
+}

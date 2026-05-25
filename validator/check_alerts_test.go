@@ -105,3 +105,24 @@ func TestServiceAlertSituationsButNoMatchWarns(t *testing.T) {
 		t.Errorf("situations present but no match should Warn, got %+v", results)
 	}
 }
+
+func TestServiceAlert404StopWarns(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	src := &SourceContext{
+		Label:      "ds0",
+		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
+		PrepErrors: map[string]error{},
+		Static:     staticForVehicle(),
+		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
+			ID:               "ALERT1",
+			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
+		}}},
+	}
+	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
+	if len(results) == 0 || results[0].Status != Warn {
+		t.Errorf("404 on stop should Warn (not Fail), got %+v", results)
+	}
+}
