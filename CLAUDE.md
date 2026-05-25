@@ -8,8 +8,10 @@ A Go CLI + library that validates a running OneBusAway (OBA) server by cross-ref
 
 ## Commands
 
+Common tasks have `make` targets (`build`, `test`, `test-live`, `vet`, `fmt`, `run`, `tidy`, `install`, `clean`); the raw commands they wrap:
+
 ```sh
-go build ./...                       # build everything
+go build ./...                       # build everything (make build → bin/oba-validator)
 go test ./...                        # run all unit tests (no network)
 go test ./validator/ -run TestName   # run a single test
 go vet ./...

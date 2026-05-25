@@ -45,5 +45,14 @@ report.WriteText(os.Stdout, rep)       // or report.WriteJSON(os.Stdout, rep)
 os.Exit(rep.ExitCode())
 ```
 
+## Development
+
+    make build       # compile to bin/oba-validator
+    make test        # run unit tests (no network)
+    make run ARGS=config.json
+    make test-live   # env-gated live test against the real server
+
+Run `make` with no target to build. See the `Makefile` for all targets.
+
 See `docs/superpowers/specs/2026-05-24-oba-validator-design.md` for the full
 design.
