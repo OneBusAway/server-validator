@@ -68,14 +68,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	cfg, err := config.Load(fs.Arg(0))
 	if err != nil {
-		fmt.Fprintln(stderr, "config error:", err)
+		if o.jsonOut {
+			if werr := report.WriteErrorJSON(stdout, err.Error(), os.Getenv("ONEBUSAWAY_API_KEY")); werr != nil {
+				fmt.Fprintln(stderr, "output error:", werr)
+			}
+		} else {
+			fmt.Fprintln(stderr, "config error:", err)
+		}
 		return 2
 	}
 	applyOverrides(&cfg, o)
 
 	rep, err := validator.Run(context.Background(), cfg)
 	if err != nil {
-		fmt.Fprintln(stderr, "run error:", err)
+		if o.jsonOut {
+			if werr := report.WriteErrorJSON(stdout, err.Error(), cfg.APIKey); werr != nil {
+				fmt.Fprintln(stderr, "output error:", werr)
+			}
+		} else {
+			fmt.Fprintln(stderr, "run error:", err)
+		}
 		return 2
 	}
 
