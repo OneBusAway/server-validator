@@ -30,16 +30,26 @@ A JSON config, supplied either as a **file path** or a **raw JSON string**
             "staticGtfsFeedURL": "https://example.com",
             "vehiclePositionsURL": "https://example.com",
             "tripUpdatesURL": "https://example.com",
-            "serviceAlertsURL": "https://example.com"
+            "serviceAlertsURL": "https://example.com",
+            "agencyMapping": { "<gtfs_agency_id>": "<oba_agency_id>" }
         }
     ]
 }
 ```
 
-Optional config fields (with defaults): `sampleSize` (3), `rtFreshnessSeconds`
-(300), `cacheDir` (OS user cache dir). CLI flags override these and add run
-controls: `--json`, `--sample-size`, `--freshness`, `--timeout` (default 120s),
-`--cache-dir`, `--no-cache`, `--refresh`.
+**`agencyMapping`** (optional, per `dataSource`) declares how the GTFS
+`agency_id` values in *this* feed map to the `agencyId` values the OBA server
+exposes — e.g. `{ "KCM": "1" }`. Keys are the GTFS `agency_id` exactly as it
+appears in `agency.txt` (case-sensitive, opaque string); values are the OBA
+`agencyId`. Any GTFS agency not listed defaults to **identity** (used as-is
+against the API), so single-agency feeds whose IDs already match need no
+mapping. The mapping is **authoritative** wherever the validator must bridge a
+GTFS agency to its OBA counterpart (see the agency-union and sampling checks).
+
+Other optional config fields (with defaults): `sampleSize` (3),
+`rtFreshnessSeconds` (300), `cacheDir` (OS user cache dir). CLI flags override
+these and add run controls: `--json`, `--sample-size`, `--freshness`,
+`--timeout` (default 120s), `--cache-dir`, `--no-cache`, `--refresh`.
 
 Reference test config (King County Metro):
 
@@ -57,6 +67,11 @@ Reference test config (King County Metro):
     ]
 }
 ```
+
+KCM's GTFS `agency_id` almost certainly differs from the `1` the Puget Sound
+server exposes, so this config will likely need an `agencyMapping` (e.g.
+`{ "KCM": "1" }`) for the agency-union check to pass. The exact key is confirmed
+by inspecting `agency.txt` at implementation time.
 
 ## Dependencies
 
@@ -88,7 +103,11 @@ Reference test config (King County Metro):
 - **OBA namespaces entity IDs** as `{agencyId}_{rawId}` (e.g. API vehicle
   `1_4567`, trip `1_12345678`), while GTFS-realtime feeds carry the raw IDs.
   All API-vs-feed ID comparisons go through the smart prefix-aware normalizer
-  (below).
+  (below). The `agencyId` used to build that prefix comes from the data
+  source's `agencyMapping`.
+- **The operator declares agency remaps; the validator never guesses them.**
+  GTFS↔OBA agency identity comes from the per-`dataSource` `agencyMapping`, not
+  from name-matching heuristics.
 
 ## Architecture
 
@@ -170,8 +189,8 @@ Smart, prefix-aware matching for comparing a raw feed ID against an OBA API ID:
 - Split the API ID on the **first** underscore; compare the suffix to the raw
   feed ID. (Raw IDs may themselves contain underscores, so only the first split
   matters.)
-- Also support the reverse: prefix a raw feed ID with a known agency ID to
-  build the expected API ID.
+- Also support the reverse: prefix a raw feed ID with the OBA `agencyId` (from
+  the data source's `agencyMapping`) to build the expected API ID.
 - Agency IDs treated strictly as strings throughout.
 
 ## Download caching
@@ -206,15 +225,21 @@ chain, each step feeding the next:
 Each step is its own `Result`. A failed step marks the remaining dependent
 steps `Skip`.
 
-**2. Agency union.** Union the `agency_id` set across *all* static GTFS feeds in
-the config; compare to the `agencies-with-coverage` `agencyId` set.
+**2. Agency union.** For every static GTFS feed, take its `agency_id` set and
+translate each through that data source's `agencyMapping` (unmapped IDs pass
+through as identity) to produce the set of **expected OBA `agencyId`s**. Union
+these across all data sources and compare to the `agencies-with-coverage`
+`agencyId` set.
 
-- GTFS agency absent from the API → `Fail`.
-- API agency absent from the GTFS union → `Warn` (the server may serve agencies
+- Expected agency absent from the API → `Fail` (genuinely not served, or a
+  missing/incorrect mapping entry).
+- API agency not in the expected set → `Warn` (the server may serve agencies
   from feeds not listed in this config).
-- Because OBA can **remap** agency IDs (GTFS `KCM` vs API `1`), when IDs don't
-  match, fall back to matching by **agency name**: a name match ⇒ `Warn`
-  (apparent remap), no match ⇒ `Fail`.
+- The `agencyMapping` is authoritative — no name-matching is used to decide
+  pass/fail. As a convenience, a `Fail` *hint* may suggest a likely mapping
+  when an unmatched API agency shares an `agency_name` with an unmatched GTFS
+  agency ("API agency `1` is named 'Metro Transit' — did you mean to map
+  `\"KCM\": \"1\"`?").
 
 ### Per data source
 
@@ -228,7 +253,9 @@ service alerts), `Realtime.CreatedAt` is within `rtFreshnessSeconds` (default
 
 **5. Vehicle sampling.** Take `sampleSize` (default 3) vehicles from the parsed
 VehiclePositions feed, preferring vehicles that have both a trip and a position.
-For each sampled vehicle:
+The OBA `agencyId` to query (and to build the `{agencyId}_{rawId}` prefix) is
+resolved from the data source's `agencyMapping`, via the agency that owns the
+vehicle's trip/route in the static GTFS. For each sampled vehicle:
 
 - **vehicles-for-agency**: the vehicle (normalized) appears in the agency's
   vehicle list.
@@ -283,7 +310,9 @@ TDD throughout.
 
 - **Unit (hermetic):** idnorm (table-driven, including alphanumeric agency IDs
   and raw IDs containing underscores); config loader (file path vs raw JSON
-  detection, malformed input); `FeedCache` (200 stores, 304 reuses, TTL skip,
+  detection, malformed input, `agencyMapping` parsing); the agency-union check
+  with and without an `agencyMapping` (identity, remap, missing-mapping `Fail`
+  with hint); `FeedCache` (200 stores, 304 reuses, TTL skip,
   `--no-cache`/`--refresh`); each check against `httptest` servers plus small
   saved `.pb` and JSON fixtures.
 - **Integration (live):** one end-to-end test gated by `OBA_VALIDATOR_LIVE=1`
