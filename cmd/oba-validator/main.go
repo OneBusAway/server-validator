@@ -1,0 +1,92 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/onebusaway/oba-validator/config"
+	"github.com/onebusaway/oba-validator/report"
+	"github.com/onebusaway/oba-validator/validator"
+)
+
+type overrides struct {
+	jsonOut    bool
+	sampleSize int
+	freshness  int
+	timeout    int
+	cacheDir   string
+	noCache    bool
+	refresh    bool
+}
+
+func applyOverrides(cfg *config.Config, o overrides) {
+	if o.sampleSize > 0 {
+		cfg.SampleSize = o.sampleSize
+	}
+	if o.freshness > 0 {
+		cfg.RTFreshnessSeconds = o.freshness
+	}
+	if o.timeout > 0 {
+		cfg.TimeoutSeconds = o.timeout
+	}
+	if o.cacheDir != "" {
+		cfg.CacheDir = o.cacheDir
+	}
+	if o.noCache {
+		cfg.NoCache = true
+	}
+	if o.refresh {
+		cfg.Refresh = true
+	}
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("oba-validator", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var o overrides
+	fs.BoolVar(&o.jsonOut, "json", false, "emit JSON instead of text")
+	fs.IntVar(&o.sampleSize, "sample-size", 0, "vehicles/trip-updates to sample per source")
+	fs.IntVar(&o.freshness, "freshness", 0, "max realtime feed age in seconds")
+	fs.IntVar(&o.timeout, "timeout", 0, "per-request timeout in seconds")
+	fs.StringVar(&o.cacheDir, "cache-dir", "", "static GTFS cache directory")
+	fs.BoolVar(&o.noCache, "no-cache", false, "bypass the static GTFS cache")
+	fs.BoolVar(&o.refresh, "refresh", false, "force re-download of static GTFS")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "usage: oba-validator [flags] <config.json | raw-json>\n\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return 2
+	}
+
+	cfg, err := config.Load(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(stderr, "config error:", err)
+		return 2
+	}
+	applyOverrides(&cfg, o)
+
+	rep, err := validator.Run(context.Background(), cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, "run error:", err)
+		return 2
+	}
+
+	if o.jsonOut {
+		_ = report.WriteJSON(stdout, rep)
+	} else {
+		_ = report.WriteText(stdout, rep)
+	}
+	return rep.ExitCode()
+}
+
+func main() {
+	os.Exit(run(os.Args, os.Stdout, os.Stderr))
+}
