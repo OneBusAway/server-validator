@@ -29,6 +29,9 @@ type SourceContext struct {
 func (s *SourceContext) prepErr(feed string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.PrepErrors == nil {
+		s.PrepErrors = map[string]error{}
+	}
 	s.PrepErrors[feed] = err
 }
 
