@@ -91,6 +91,10 @@ func (vehicleSamplingCheck) Run(ctx context.Context, vc *ValidationContext, src 
 		case IDMatch(tfv.Data.Entry.TripID, rawTrip, agency):
 			out = append(out, Result{Check: name + "/trip-for-vehicle", Source: src.Label, Status: Pass,
 				Message: fmt.Sprintf("vehicle %q on expected trip %q", rawVeh, rawTrip)})
+		case tfv.Data.Entry.TripID == "":
+			out = append(out, Result{Check: name + "/trip-for-vehicle", Source: src.Label, Status: Warn,
+				Message: fmt.Sprintf("trip-for-vehicle returned no current trip for vehicle %q", rawVeh),
+				Details: map[string]any{"vehicleId": obaVeh}})
 		default:
 			out = append(out, Result{Check: name + "/trip-for-vehicle", Source: src.Label, Status: Fail,
 				Message: fmt.Sprintf("trip-for-vehicle returned %q, feed says %q", tfv.Data.Entry.TripID, rawTrip),

@@ -64,6 +64,12 @@ func (serviceAlertCheck) Run(ctx context.Context, vc *ValidationContext, src *So
 				}
 			}
 		}
+		for _, sit := range ad.Data.References.Situations {
+			anySituation = true
+			if IDMatch(sit.ID, s.alert.ID, agency) {
+				matched = true
+			}
+		}
 		switch {
 		case matched:
 			out = append(out, Result{Check: name, Source: src.Label, Status: Pass,

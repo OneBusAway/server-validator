@@ -106,6 +106,33 @@ func TestServiceAlertSituationsButNoMatchWarns(t *testing.T) {
 	}
 }
 
+func TestServiceAlertFoundInGlobalReferences(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "arrivals-and-departures-for-stop") {
+			w.Header().Set("Content-Type", "application/json")
+			// situationIds empty on the arrival, but the alert IS in references.situations
+			w.Write([]byte(`{"data":{"entry":{"arrivalsAndDepartures":[{"stopId":"1_ST1","tripId":"1_T1"}]},"references":{"situations":[{"id":"1_ALERT1"}]}}}`))
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+	})
+	src := &SourceContext{
+		Label:      "ds0",
+		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
+		PrepErrors: map[string]error{},
+		Static:     staticForVehicle(),
+		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
+			ID:               "ALERT1",
+			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
+		}}},
+	}
+	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
+	if len(results) == 0 || results[0].Status != Pass {
+		t.Errorf("alert in global references.situations should Pass, got %+v", results)
+	}
+}
+
 func TestServiceAlert404StopWarns(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
