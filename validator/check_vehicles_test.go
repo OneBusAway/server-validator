@@ -2,7 +2,6 @@ package validator
 
 import (
 	"context"
-	"net/http"
 	"strings"
 	"testing"
 
@@ -29,75 +28,84 @@ func staticForVehicle() *feeds.ParsedStatic {
 	return p
 }
 
+// vehicleSrcForTest builds a SourceContext with one sampled vehicle on trip T1.
+func vehicleSrcForTest() *SourceContext {
+	s := baseSrc()
+	s.VehiclePositions = &gtfs.Realtime{Vehicles: []gtfs.Vehicle{{
+		ID:       &gtfs.VehicleID{ID: "V1"},
+		Trip:     &gtfs.Trip{ID: gtfs.TripID{ID: "T1", RouteID: "R1"}},
+		Position: &gtfs.Position{Latitude: f32(47.6), Longitude: f32(-122.3)},
+	}}}
+	return s
+}
+
 func TestVehicleSamplingHappyPath(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(p, "vehicles-for-agency"):
-			w.Write([]byte(`{"data":{"list":[{"vehicleId":"1_V1","tripId":"1_T1"}]}}`))
-		case strings.Contains(p, "trip-for-vehicle"):
-			w.Write([]byte(`{"data":{"entry":{"tripId":"1_T1"}}}`))
-		case strings.Contains(p, "trips-for-location"):
-			w.Write([]byte(`{"data":{"list":[{"tripId":"1_T1"}]}}`))
-		default:
-			t.Errorf("unexpected path %s", p)
-		}
-	})
-	src := &SourceContext{
-		Label:      "ds0",
-		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
-		PrepErrors: map[string]error{},
-		Static:     staticForVehicle(),
-		VehiclePositions: &gtfs.Realtime{Vehicles: []gtfs.Vehicle{{
-			ID:       &gtfs.VehicleID{ID: "V1"},
-			Trip:     &gtfs.Trip{ID: gtfs.TripID{ID: "T1", RouteID: "R1"}},
-			Position: &gtfs.Position{Latitude: f32(47.6), Longitude: f32(-122.3)},
-		}}},
-	}
+	client := vehicleClient(t, vehicleValidBodies())
 	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
-	results := vehicleSamplingCheck{}.Run(context.Background(), vc, src)
-	for _, r := range results {
-		if r.Status == Fail {
-			t.Errorf("%s Fail: %s", r.Check, r.Message)
-		}
-	}
+	results := vehicleSamplingCheck{}.Run(context.Background(), vc, vehicleSrcForTest())
+	assertNoFail(t, results)
 	if len(results) == 0 {
 		t.Fatal("expected sub-results")
 	}
 }
 
 func TestVehicleSamplingEmptyTripForVehicleWarns(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "vehicles-for-agency"):
-			w.Write([]byte(`{"data":{"list":[{"vehicleId":"1_V1","tripId":"1_T1"}]}}`))
-		case strings.Contains(r.URL.Path, "trip-for-vehicle"):
-			w.Write([]byte(`{"data":{"entry":{"tripId":""}}}`)) // no current trip
-		case strings.Contains(r.URL.Path, "trips-for-location"):
-			w.Write([]byte(`{"data":{"list":[{"tripId":"1_T1"}]}}`))
-		default:
-			t.Errorf("unexpected path %s", r.URL.Path)
-		}
-	})
-	src := &SourceContext{
-		Label:      "ds0",
-		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
-		PrepErrors: map[string]error{},
-		Static:     staticForVehicle(),
-		VehiclePositions: &gtfs.Realtime{Vehicles: []gtfs.Vehicle{{
-			ID:       &gtfs.VehicleID{ID: "V1"},
-			Trip:     &gtfs.Trip{ID: gtfs.TripID{ID: "T1", RouteID: "R1"}},
-			Position: &gtfs.Position{Latitude: f32(47.6), Longitude: f32(-122.3)},
-		}}},
-	}
+	bodies := vehicleValidBodies()
+	bodies["trip-for-vehicle"] = `{"data":{"entry":{"tripId":""}}}` // no current trip
+	client := vehicleClient(t, bodies)
 	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
-	results := vehicleSamplingCheck{}.Run(context.Background(), vc, src)
+	results := vehicleSamplingCheck{}.Run(context.Background(), vc, vehicleSrcForTest())
+	if !hasWarn(results, "trip-for-vehicle") {
+		t.Errorf("empty current trip should Warn, got %+v", results)
+	}
+	assertNoFail(t, results)
+}
+
+// The OBA server returns a literal `null` body (HTTP 200) for some queries; the
+// SDK decodes that into a nil response with a nil error. The check must not
+// dereference it — each of the three OBA calls is covered here.
+func TestVehicleSamplingNullResponses(t *testing.T) {
+	cases := []struct {
+		nullPath, wantCheck string
+		want                Status
+	}{
+		// vehicles-for-agency is the agency-wide roster: the feed proves the
+		// agency has vehicles, so a null (like an empty) response is the API
+		// missing data the feed proves exists — Fail, matching the empty branch.
+		{"vehicles-for-agency", "vehicles-for-agency", Fail},
+		// Per-vehicle cross-refs are unconfirmed on a null response — Warn.
+		{"trip-for-vehicle", "trip-for-vehicle", Warn},
+		{"trips-for-location", "trips-for-location", Warn},
+	}
+	for _, tc := range cases {
+		t.Run(tc.nullPath, func(t *testing.T) {
+			bodies := vehicleValidBodies()
+			bodies[tc.nullPath] = `null`
+			vc := &ValidationContext{Config: cfgForTest("test"), Client: vehicleClient(t, bodies)}
+			results := vehicleSamplingCheck{}.Run(context.Background(), vc, vehicleSrcForTest())
+			if !hasStatus(results, tc.wantCheck, tc.want) {
+				t.Errorf("null %s: want %v on %s, got %+v", tc.nullPath, tc.want, tc.wantCheck, results)
+			}
+		})
+	}
+}
+
+func hasWarn(results []Result, checkSubstr string) bool {
+	return hasStatus(results, checkSubstr, Warn)
+}
+
+func hasStatus(results []Result, checkSubstr string, status Status) bool {
 	for _, r := range results {
-		if strings.Contains(r.Check, "trip-for-vehicle") && r.Status != Warn {
-			t.Errorf("empty current trip should Warn, got %v: %s", r.Status, r.Message)
+		if strings.Contains(r.Check, checkSubstr) && r.Status == status {
+			return true
 		}
+	}
+	return false
+}
+
+func assertNoFail(t *testing.T, results []Result) {
+	t.Helper()
+	for _, r := range results {
 		if r.Status == Fail {
 			t.Errorf("unexpected Fail: %s %s", r.Check, r.Message)
 		}

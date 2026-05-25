@@ -48,10 +48,9 @@ func (serviceAlertCheck) Run(ctx context.Context, vc *ValidationContext, src *So
 	var out []Result
 	for _, s := range sample {
 		obaStop := PrefixedID(agency, s.rawStop)
-		ad, err := vc.Client.ArrivalAndDeparture.List(ctx, obaStop, onebusaway.ArrivalAndDepartureListParams{})
-		if err != nil {
-			out = append(out, Result{Check: name, Source: src.Label, Status: Warn,
-				Message: fmt.Sprintf("could not query stop %q (agency prefix may be wrong): %s", obaStop, redact(err, key))})
+		ad, bad := queryArrivals(ctx, vc, name, src.Label, obaStop)
+		if bad != nil {
+			out = append(out, *bad)
 			continue
 		}
 		anySituation := false
@@ -85,4 +84,23 @@ func (serviceAlertCheck) Run(ctx context.Context, vc *ValidationContext, src *So
 		}
 	}
 	return out
+}
+
+// queryArrivals fetches arrivals-and-departures for a stop. It returns a non-nil
+// *Result — a Warn the caller should record before skipping the stop — when the
+// call errors or the server returns a null body, so the two cross-reference
+// checks (alerts, trip-updates) share identical "couldn't read this stop"
+// handling. A null body must never be read as "stop confirmed empty".
+func queryArrivals(ctx context.Context, vc *ValidationContext, check, label, obaStop string) (*onebusaway.ArrivalAndDepartureListResponse, *Result) {
+	ad, err := vc.Client.ArrivalAndDeparture.List(ctx, obaStop, onebusaway.ArrivalAndDepartureListParams{})
+	switch {
+	case err != nil:
+		return nil, &Result{Check: check, Source: label, Status: Warn,
+			Message: fmt.Sprintf("could not query stop %q (agency prefix may be wrong): %s", obaStop, redact(err, vc.Config.APIKey))}
+	case ad == nil:
+		return nil, &Result{Check: check, Source: label, Status: Warn,
+			Message: fmt.Sprintf("arrivals query for stop %q returned a null response", obaStop),
+			Details: map[string]any{"stopId": obaStop}}
+	}
+	return ad, nil
 }

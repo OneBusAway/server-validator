@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	gtfs "github.com/OneBusAway/go-gtfs"
-	onebusaway "github.com/OneBusAway/go-sdk"
 )
 
 type tripUpdateSamplingCheck struct{}
@@ -58,10 +57,9 @@ func (tripUpdateSamplingCheck) Run(ctx context.Context, vc *ValidationContext, s
 		}
 		obaStop := PrefixedID(agency, rawStop)
 
-		ad, err := vc.Client.ArrivalAndDeparture.List(ctx, obaStop, onebusaway.ArrivalAndDepartureListParams{})
-		if err != nil {
-			out = append(out, Result{Check: name, Source: src.Label, Status: Warn,
-				Message: fmt.Sprintf("could not query stop %q (agency prefix may be wrong): %s", obaStop, redact(err, key))})
+		ad, bad := queryArrivals(ctx, vc, name, src.Label, obaStop)
+		if bad != nil {
+			out = append(out, *bad)
 			continue
 		}
 		found := false
