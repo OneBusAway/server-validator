@@ -79,10 +79,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	var werr error
 	if o.jsonOut {
-		_ = report.WriteJSON(stdout, rep)
+		werr = report.WriteJSON(stdout, rep)
 	} else {
-		_ = report.WriteText(stdout, rep)
+		werr = report.WriteText(stdout, rep)
+	}
+	if werr != nil {
+		fmt.Fprintln(stderr, "output error:", werr)
+		return 2
 	}
 	return rep.ExitCode()
 }

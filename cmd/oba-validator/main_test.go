@@ -25,3 +25,14 @@ func TestUsageWhenNoArgs(t *testing.T) {
 		t.Error("expected usage on stderr")
 	}
 }
+
+func TestUsageWhenTooManyArgs(t *testing.T) {
+	var stderr bytes.Buffer
+	code := run([]string{"oba-validator", "a", "b"}, &bytes.Buffer{}, &stderr)
+	if code != 2 {
+		t.Errorf("exit=%d want 2", code)
+	}
+	if stderr.Len() == 0 {
+		t.Error("expected usage on stderr")
+	}
+}

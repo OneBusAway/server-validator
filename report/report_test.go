@@ -48,3 +48,13 @@ func TestWriteText(t *testing.T) {
 		t.Errorf("missing summary:\n%s", out)
 	}
 }
+
+func TestWriteTextSummaryLine(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteText(&buf, sampleReport()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "FAIL (2 checks, 1 failed, 0 warnings)") {
+		t.Errorf("summary line wrong:\n%s", buf.String())
+	}
+}
