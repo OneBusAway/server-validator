@@ -1,7 +1,7 @@
 # OBA Validator — Design
 
 **Date:** 2026-05-24
-**Status:** Approved (pending spec review)
+**Status:** Approved; revised after architect review (pending final user review)
 
 ## Purpose
 
@@ -47,9 +47,14 @@ mapping. The mapping is **authoritative** wherever the validator must bridge a
 GTFS agency to its OBA counterpart (see the agency-union and sampling checks).
 
 Other optional config fields (with defaults): `sampleSize` (3),
-`rtFreshnessSeconds` (300), `cacheDir` (OS user cache dir). CLI flags override
-these and add run controls: `--json`, `--sample-size`, `--freshness`,
-`--timeout` (default 120s), `--cache-dir`, `--no-cache`, `--refresh`.
+`rtFreshnessSeconds` (300), `locationSpan` (0.01°), `maxConcurrency` (low,
+e.g. 4), `cacheDir` (OS user cache dir). CLI flags override these and add run
+controls: `--json`, `--sample-size`, `--freshness`, `--timeout` (default 120s),
+`--cache-dir`, `--no-cache`, `--refresh`.
+
+`apiKey` may be omitted from the config and supplied via the `ONEBUSAWAY_API_KEY`
+environment variable (which the SDK already reads), so the key need not sit in a
+file. It is never echoed to output (see Error handling).
 
 Reference test config (King County Metro):
 
@@ -59,6 +64,7 @@ Reference test config (King County Metro):
     "apiKey": "org.onebusaway.iphone",
     "dataSources": [
         {
+            "agencyMapping": {"KCM": "1"},
             "staticGtfsFeedURL": "https://metro.kingcounty.gov/GTFS/google_transit.zip",
             "vehiclePositionsURL": "https://s3.amazonaws.com/kcm-alerts-realtime-prod/vehiclepositions.pb",
             "tripUpdatesURL": "https://s3.amazonaws.com/kcm-alerts-realtime-prod/tripupdates.pb",
@@ -79,21 +85,47 @@ by inspecting `agency.txt` at implementation time.
   Exposes one service per endpoint we use: `CurrentTime`,
   `AgenciesWithCoverage`, `RoutesForAgency`, `StopsForRoute`, `Stop`,
   `StopsForLocation`, `ArrivalsAndDeparturesForStop`, `VehiclesForAgency`,
-  `TripForVehicle`, `TripsForLocation`. Client init takes base URL + API key.
-  *Exact method parameter structs to be confirmed against `api.md` at
-  implementation time.*
-- **go-gtfs** (`github.com/onebusaway/go-gtfs`) — parses both static GTFS zips
-  (`ParseStatic`) and GTFS-realtime (`ParseRealtime`). Verified to expose
-  everything we need; **no hand-compiled `.proto` required.** Relevant types:
+  `TripForVehicle`, `TripsForLocation`.
+  - **Client init:** `onebusaway.NewClient(option.WithAPIKey(key),
+    option.WithBaseURL(url), option.WithRequestTimeout(d),
+    option.WithMaxRetries(n), option.WithHTTPClient(c))`. The
+    `ValidationContext` holds the constructed `*onebusaway.Client` (injected,
+    not built internally) so checks can be exercised against an `httptest`
+    server via `WithBaseURL`/`WithHTTPClient`.
+  - **Param wrapping:** every query parameter is a `param.Field[T]` and must be
+    wrapped with the SDK helpers (e.g. `onebusaway.Float(x)`); a check that
+    passes lat/lon/time must construct these, not pass bare values.
+  - **Verified param/response specifics** (read from SDK source, not assumed):
+    - `TripsForLocationListParams` requires `Lat, LatSpan, Lon, LonSpan`
+      (`param.Field[float64]`) — **there is no `Radius`** (see check 5).
+    - `StopsForLocationListParams` has optional `Radius`/`LatSpan`/`LonSpan`.
+    - Arrival/departure entries carry a per-arrival `SituationIDs []string`
+      (`json:"situationIds"`) in addition to a global `References.Situations`
+      (see check 7).
+    - `current-time` returns epoch **milliseconds** (not seconds).
+    - The `Time` param type is inconsistent across endpoints (some
+      `param.Field[int64]`, some `param.Field[time.Time]`); confirm per call.
+- **go-gtfs** (`github.com/OneBusAway/go-gtfs`) — parses both static GTFS zips
+  (`ParseStatic(content []byte, opts ParseStaticOptions)`) and GTFS-realtime
+  (`ParseRealtime(content []byte, opts *ParseRealtimeOptions)`). Both take the
+  full payload as bytes (the whole zip in memory for static). **No
+  hand-compiled `.proto` required.** Relevant types:
   - Static: `Static{Agencies []Agency, Routes []Route, Stops []Stop, Trips
     []ScheduledTrip}`; `Agency{Id string, Name string}`; `Stop{Id string,
-    Latitude *float64, Longitude *float64}`.
+    Latitude *float64, Longitude *float64}`; `ScheduledTrip{ID string, Route
+    *Route}`, `Route{Id string, Agency *Agency}` (this trip→route→agency
+    linkage is what the sampling checks use to resolve a feed entity's agency).
   - Realtime: `Realtime{CreatedAt time.Time, Trips []Trip, Vehicles []Vehicle,
-    Alerts []Alert}`; `Vehicle{ID *VehicleID, Trip *Trip, Position
-    *Position{Latitude/Longitude *float32}}`; `Trip{ID TripID{ID, RouteID},
-    StopTimeUpdates []StopTimeUpdate{StopID *string, Arrival/Departure}}`;
-    `Alert{ID string, InformedEntities []AlertInformedEntity{AgencyID, RouteID,
-    TripID, StopID}}`.
+    Alerts []Alert}`; `Vehicle{ID *VehicleID{ID, Label, LicensePlate}, Trip
+    *Trip, Position *Position{Latitude/Longitude *float32}}`; `Trip{ID
+    TripID{ID, RouteID}, StopTimeUpdates []StopTimeUpdate{StopID *string,
+    Arrival/Departure *StopTimeEvent}}`; `Alert{ID string, InformedEntities
+    []AlertInformedEntity{AgencyID *string, RouteID *string, TripID *TripID,
+    StopID *string}}` — note `TripID` is a `*TripID` struct; use
+    `entity.TripID.ID` for the raw trip id.
+  - `ParseRealtimeOptions.Timezone` governs timestamp interpretation
+    (nil ⇒ UTC). We pass `time.UTC` explicitly (GTFS-rt timestamps are
+    POSIX/UTC by spec); `CreatedAt` derives from the feed header timestamp.
 
 ## Key invariants
 
@@ -105,6 +137,17 @@ by inspecting `agency.txt` at implementation time.
   All API-vs-feed ID comparisons go through the smart prefix-aware normalizer
   (below). The `agencyId` used to build that prefix comes from the data
   source's `agencyMapping`.
+  - This convention is **reliable for stops, routes, and trips**. It is **not
+    reliable for vehicles** (OBA's `vehicleId` raw portion is not guaranteed to
+    equal the GTFS-rt `VehicleDescriptor.id`/`label`) or for **situations**
+    (OBA frequently synthesizes its own situation id rather than reusing the
+    GTFS-rt `Alert.id`). Checks against vehicles and situations therefore use
+    tolerant matching and downgrade an unconfirmed match to `Warn`, never a
+    hard `Fail` on id shape alone (see checks 5 and 7).
+- **`agency_id` may be blank.** GTFS permits an empty `agency_id` when a feed
+  has exactly one agency. A blank id has no prefix to strip/build; the
+  normalizer must handle it (treat the whole API id as raw when there is no
+  agency prefix) and the operator can map `"": "<obaId>"` explicitly.
 - **The operator declares agency remaps; the validator never guesses them.**
   GTFS↔OBA agency identity comes from the per-`dataSource` `agencyMapping`, not
   from name-matching heuristics.
@@ -114,9 +157,10 @@ by inspecting `agency.txt` at implementation time.
 A two-phase design behind `validator.Run(ctx, cfg) → Report`:
 
 1. **Preparation phase** builds a shared `ValidationContext`: the OBA SDK
-   client, the fetched `agencies-with-coverage` list, and — per data source —
-   the parsed static GTFS plus the three parsed RT feeds. All expensive
-   downloads/parses happen exactly once here.
+   client, the fetched `agencies-with-coverage` list, and — per data source — a
+   `SourceContext` holding the parsed static GTFS, the three parsed RT feeds,
+   and the resolved `agencyMapping`. All expensive downloads/parses happen
+   exactly once here.
 2. **Check phase** runs small `Check` units that read from the
    `ValidationContext` and emit `Result`s. No check re-downloads anything.
    Checks run in two groups: server-level (run once) and per-data-source.
@@ -127,8 +171,9 @@ This is a real importable library (no `internal/`):
 
 ```
 config/      Config struct; Load(pathOrJSON) auto-detecting file vs raw JSON
-validator/   Run orchestrator; Check interface; Result/Status/Report;
-             ValidationContext; ID normalizer (idnorm)
+validator/   Run orchestrator; ServerCheck/DataSourceCheck interfaces;
+             Result/Status/Report; ValidationContext/SourceContext;
+             ID normalizer (idnorm)
 feeds/       HTTP fetch; FeedCache (conditional GET); static + realtime
              parse wrappers
 checks/      one file per check: endpoints, agencies, gtfs_sanity, freshness,
@@ -160,11 +205,25 @@ type Result struct {
 
 type Report struct { Results []Result } // + Worst(), ExitCode(), WriteText, WriteJSON
 
-type Check interface {
+// Server-level checks run once against the whole server.
+type ServerCheck interface {
     Name() string
     Run(ctx context.Context, vc *ValidationContext) []Result
 }
+
+// Per-data-source checks run once per dataSource; the orchestrator passes the
+// specific source (parsed feeds + agencyMapping) so the check never loops over
+// all sources itself.
+type DataSourceCheck interface {
+    Name() string
+    Run(ctx context.Context, vc *ValidationContext, src *SourceContext) []Result
+}
 ```
+
+`SourceContext` holds one data source's parsed static GTFS, the three parsed RT
+feeds, and its resolved `agencyMapping`. The orchestrator owns the
+server-vs-source grouping; checks stay single-purpose. Each `Result` records
+which data source it came from (index/label) so the reporter can group output.
 
 ### Severity model (evidence-based)
 
@@ -191,7 +250,13 @@ Smart, prefix-aware matching for comparing a raw feed ID against an OBA API ID:
   matters.)
 - Also support the reverse: prefix a raw feed ID with the OBA `agencyId` (from
   the data source's `agencyMapping`) to build the expected API ID.
+- When there is no agency prefix (blank `agency_id`, or an API id with no
+  underscore), compare the full ids directly.
 - Agency IDs treated strictly as strings throughout.
+- **Per-entity confidence:** the helper exposes the match outcome (matched / not
+  matched) so callers decide severity. Stops/routes/trips treat a non-match as
+  authoritative; vehicles and situations treat a non-match as inconclusive
+  (`Warn`) because their id schemes are unreliable (see Key invariants).
 
 ## Download caching
 
@@ -200,11 +265,20 @@ A `FeedCache` keyed by `sha256(url)`, stored under
 (url, etag, last-modified, fetched-at).
 
 - **Static GTFS** is cached. Each run issues a conditional GET using the stored
-  `ETag` / `Last-Modified`; a `304 Not Modified` reuses the cached zip. When the
-  server provides no validators, fall back to a TTL (default 1h) to skip the
-  network. `--no-cache` bypasses the cache; `--refresh` forces a re-download.
+  `ETag` / `Last-Modified`; a `304 Not Modified` reuses the cached zip.
+  - **Validators take precedence over TTL:** the TTL fallback (default 1h)
+    applies only when the cache entry has *no* `ETag`/`Last-Modified`. If a
+    server sends validators but ignores them and returns `200` every time
+    (common with S3/CDN), we simply accept the re-download.
+  - `--no-cache` bypasses the cache; `--refresh` forces a re-download.
 - **Realtime feeds are never cached** — always fetched fresh, so the freshness
   check is meaningful.
+
+**Corruption / concurrency safety:** write `{hash}.body` to a temp file and
+atomic-rename it into place, then write `{hash}.meta.json`; a body present
+without valid meta is treated as a miss (guards against truncated writes from a
+crash mid-download). A per-key lock (single-flight) prevents two data sources
+that share a static feed URL from racing to write the same entry.
 
 ## The checks
 
@@ -213,12 +287,15 @@ A `FeedCache` keyed by `sha256(url)`, stored under
 **1. Basic endpoints** (a port of `docker/bin/validate.sh`). A dependency
 chain, each step feeding the next:
 
-1. `current-time` → numeric epoch returned (sanity: roughly near now).
+1. `current-time` → epoch **milliseconds** returned, within a tolerance window
+   of local now (default ±1h, to absorb clock skew without ignoring a wrong
+   clock). Beyond the window → `Warn`.
 2. `agencies-with-coverage` → at least one agency; capture first `agencyId`.
 3. `routes-for-agency(agencyId)` → at least one route; capture first `routeId`.
 4. `stops-for-route(routeId)` → `entry.routeId` matches; capture first `stopId`.
 5. `stop(stopId)` → `entry.id` matches; capture `lat`/`lon`.
 6. `stops-for-location(lat, lon)` → `outOfRange == false` and at least one stop.
+   (No span/radius set → server default radius, matching `validate.sh`.)
 7. `arrivals-and-departures-for-stop(stopId)` → `entry.stopId` matches; empty
    arrivals list → `Warn`.
 
@@ -231,14 +308,20 @@ through as identity) to produce the set of **expected OBA `agencyId`s**. Union
 these across all data sources and compare to the `agencies-with-coverage`
 `agencyId` set.
 
-- Expected agency absent from the API → `Fail` (genuinely not served, or a
-  missing/incorrect mapping entry).
+- A **mapped** expected agency absent from the API → `Fail` (genuinely not
+  served, or a wrong mapping value).
+- An **unmapped (identity-assumed)** expected agency absent from the API →
+  `Warn` ("assumed identity mapping `X`; add an `agencyMapping` entry if the
+  server remaps it"). This prevents a guaranteed false `Fail` for the common
+  case where the operator simply hasn't declared a remap — including a blank
+  `agency_id` (mapping key `""`), which never matches a real OBA `agencyId`
+  unmapped.
 - API agency not in the expected set → `Warn` (the server may serve agencies
   from feeds not listed in this config).
 - The `agencyMapping` is authoritative — no name-matching is used to decide
-  pass/fail. As a convenience, a `Fail` *hint* may suggest a likely mapping
-  when an unmatched API agency shares an `agency_name` with an unmatched GTFS
-  agency ("API agency `1` is named 'Metro Transit' — did you mean to map
+  pass/fail. As a convenience, a `Warn`/`Fail` *hint* may suggest a likely
+  mapping when an unmatched API agency shares an `agency_name` with an unmatched
+  GTFS agency ("API agency `1` is named 'Metro Transit' — did you mean to map
   `\"KCM\": \"1\"`?").
 
 ### Per data source
@@ -248,24 +331,46 @@ stops, and trips; otherwise `Fail`. (Runs against the already-parsed feed —
 nearly free.)
 
 **4. RT feed freshness.** For each RT feed (vehicle positions, trip updates,
-service alerts), `Realtime.CreatedAt` is within `rtFreshnessSeconds` (default
-300) of now. Stale → `Fail`; missing/zero timestamp → `Warn`.
+service alerts), `Realtime.CreatedAt` (parsed with `time.UTC`) is within
+`rtFreshnessSeconds` (default 300) of now. Stale → `Fail`; missing/zero
+timestamp → `Warn`; a timestamp dated meaningfully in the *future* → `Warn`
+(clock/timezone problem rather than staleness).
+
+**Deterministic sampling (applies to checks 5–7).** Candidate entities are
+sorted by a stable key (raw id) before the first `sampleSize` are taken, so a
+scheduled monitor samples the same entities run-to-run and `Warn`/`Fail`
+signals don't flap.
 
 **5. Vehicle sampling.** Take `sampleSize` (default 3) vehicles from the parsed
 VehiclePositions feed, preferring vehicles that have both a trip and a position.
-The OBA `agencyId` to query (and to build the `{agencyId}_{rawId}` prefix) is
-resolved from the data source's `agencyMapping`, via the agency that owns the
-vehicle's trip/route in the static GTFS. For each sampled vehicle:
 
-- **vehicles-for-agency**: the vehicle (normalized) appears in the agency's
-  vehicle list.
+*Agency resolution.* The OBA `agencyId` to query is derived from the static
+GTFS: feed `trip_id` → `ScheduledTrip.ID` → `.Route.Agency.Id`, falling back to
+feed `route_id` → `Route.Id` → `.Route.Agency.Id` (RT vehicle positions often
+omit `route_id`), then translated through the data source's `agencyMapping`. If
+neither join resolves (RT references a trip/route absent from the cached static
+feed — version skew, added trips), the vehicle is **not sampleable** → `Warn`
+("could not resolve agency for vehicle X"), never `Fail`.
+
+For each resolved vehicle:
+
+- **vehicles-for-agency**: `vehicles-for-agency` returns no agency field, so
+  agency identity is the path param. Match the feed vehicle against the returned
+  `vehicleId`s using idnorm, trying `VehicleID.ID` and then `VehicleID.Label`.
+  Match ⇒ `Pass`. List non-empty but no match ⇒ `Warn` (likely id-convention
+  mismatch; surface both ids in `Details`). List empty while the feed is
+  populated ⇒ `Fail`.
 - **trip-for-vehicle**: returns a trip whose `tripId` matches (normalized) the
-  feed vehicle's `trip_id`.
-- **trips-for-location**: queried at the vehicle's lat/lon (small radius), the
-  vehicle's trip appears in results.
+  feed vehicle's `trip_id`. No matching trip ⇒ `Fail`; empty/no current trip ⇒
+  `Warn`.
+- **trips-for-location**: queried with a bounding box around the vehicle's
+  lat/lon — `Lat`, `Lon`, and required `LatSpan`/`LonSpan` (default span
+  `0.01°` ≈ 1.1 km, configurable as `locationSpan`); **there is no radius
+  param**. The vehicle's trip appears in results ⇒ `Pass`; absent ⇒ `Warn` (the
+  vehicle may have moved out of the box between feed fetch and query — not a
+  hard `Fail`). Vehicle lacked a position ⇒ `Warn` (can't query).
 
-Found ⇒ `Pass`. In-feed-but-not-in-API ⇒ `Fail`. Vehicle lacked a position (for
-the location check) ⇒ `Warn`. Feed empty ⇒ `Warn`.
+Feed empty ⇒ `Warn`.
 
 **6. Trip-update sampling.** Take `sampleSize` trip updates from the parsed
 TripUpdates feed. For a `StopTimeUpdate` with a predicted arrival/departure,
@@ -275,24 +380,52 @@ In-feed-but-absent ⇒ `Fail`. No usable stop-time-update ⇒ `Warn`. (v1 uses
 `arrivals-and-departures-for-stop` only; `trip-details` deferred.)
 
 **7. Service-alert cross-reference** (the flakiest check). Take `sampleSize`
-active alerts, preferring those with an informed `stop_id`; resolve trip- or
-route-scoped alerts to a representative stop via the static GTFS. Query
-`arrivals-and-departures-for-stop` for that stop and confirm the alert id
-(normalized) appears in the response's `references.situations`. Absent ⇒ `Fail`.
-No cross-referenceable alert could be sampled ⇒ `Warn`.
+active alerts, preferring those with an informed `stop_id`; resolve trip-scoped
+(`InformedEntity.TripID.ID`) or route-scoped alerts to a representative stop via
+the static GTFS. Query `arrivals-and-departures-for-stop` for that stop and
+confirm the alert id appears in the relevant **per-arrival `SituationIDs`**
+(scoped to the affected trip) — falling back to the response's global
+`References.Situations`. Because OBA may synthesize situation ids that don't
+equal the GTFS-rt `Alert.id` (see Key invariants), a non-match is `Warn`, not
+`Fail`; a `Fail` is reserved for the case where the endpoint errors or returns
+no situations at all for a stop the feed says is actively affected. No
+cross-referenceable alert could be sampled ⇒ `Warn`.
 
-## Concurrency
+## Concurrency, request volume & memory
 
 Within a data source, the three+ RT feeds and the static GTFS are fetched
 concurrently during preparation. Checks within a source run sequentially for
 deterministic output ordering. v1 processes data sources sequentially; the
 design permits per-source parallelism later without restructuring.
 
+**API politeness.** The sampling checks fan out: roughly `3 × sampleSize`
+(vehicles) + `sampleSize` (trip updates) + `sampleSize` (alerts) calls per data
+source — ~20 calls/source at the default against a shared production server.
+The SDK is constructed with an explicit `WithMaxRetries` (don't rely on the
+default, which can silently multiply load) and a configurable concurrency cap
+(`maxConcurrency`, default low) bounds in-flight API calls. Expected request
+volume is documented for operators scheduling the tool.
+
+**Memory.** `ParseStatic` holds the entire zip in memory and the parsed
+`Static` (all trips/stop_times) for a large multi-agency feed can be hundreds of
+MB; peak is the sum across data sources held in the `ValidationContext`. The raw
+zip bytes are released after parsing. We keep `Trips`/`Routes` (needed for the
+check-5 trip→route→agency join) but don't otherwise traverse `ScheduledStopTime`
+data.
+
 ## Error handling
 
 - A feed that won't download or parse is **breakage** → `Fail` with the
   underlying error in `Details`. This is distinct from a valid-but-empty feed
   (`Warn`).
+- **Preparation failures** (a feed 404s, or the server is unreachable) produce
+  `Fail` results that explicitly say preparation could not complete, so the
+  report distinguishes "server/feed down" from "server up, one check failed."
+  Exit code is still `1` (no separate code), but the message is unambiguous and
+  dependent per-source checks are marked `Skip`.
+- **Secret handling.** The `apiKey` must never appear in `Result.Details`, log
+  output, or the JSON report. SDK errors and URLs that may embed the key as a
+  query param are redacted before being stored or printed.
 - Per-request timeout via `context` (default 120s, `--timeout`).
 - Config load/parse errors exit `2` with a clear message before any checks run.
 
@@ -308,13 +441,19 @@ design permits per-source parallelism later without restructuring.
 
 TDD throughout.
 
-- **Unit (hermetic):** idnorm (table-driven, including alphanumeric agency IDs
-  and raw IDs containing underscores); config loader (file path vs raw JSON
-  detection, malformed input, `agencyMapping` parsing); the agency-union check
-  with and without an `agencyMapping` (identity, remap, missing-mapping `Fail`
-  with hint); `FeedCache` (200 stores, 304 reuses, TTL skip,
-  `--no-cache`/`--refresh`); each check against `httptest` servers plus small
-  saved `.pb` and JSON fixtures.
+- **Unit (hermetic):** idnorm (table-driven: alphanumeric agency IDs, raw IDs
+  containing underscores, blank `agency_id`/no-prefix, matched-vs-inconclusive
+  outcome); config loader (file path vs raw JSON detection, malformed input,
+  `agencyMapping` parsing, `apiKey` from env); the agency-union check across
+  identity/remap/mapped-missing(`Fail`)/unmapped-missing(`Warn`)/blank-id cases;
+  vehicle sampling's agency-resolution (trip_id join, route_id fallback,
+  unresolvable → `Warn`) and graded vehicles-for-agency matching (match `Pass`,
+  no-match-non-empty `Warn`, empty-list `Fail`); service-alert matching against
+  per-arrival `SituationIDs`; secret redaction (apiKey never in `Details`/JSON);
+  `FeedCache` (200 stores, 304 reuses, validator-vs-TTL precedence, atomic
+  write / truncated-body-treated-as-miss, `--no-cache`/`--refresh`); each check
+  against `httptest` servers (via `WithBaseURL`) plus small saved `.pb` and JSON
+  fixtures.
 - **Integration (live):** one end-to-end test gated by `OBA_VALIDATOR_LIVE=1`
   running the King County Metro config against the real server. Off by default
   in CI.
