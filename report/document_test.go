@@ -147,3 +147,90 @@ func TestBuildDocument_RedactsAPIKey(t *testing.T) {
 		t.Errorf("expected redaction marker in output:\n%s", b)
 	}
 }
+
+func TestCountsAddPanicsOnUnknownStatus(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic on out-of-range status")
+		}
+	}()
+	var c Counts
+	c.add(validator.Status(99))
+}
+
+func TestBuildDocument_SkipCounted(t *testing.T) {
+	rep := validator.Report{Results: []validator.Result{
+		{Check: "dep", Status: validator.Skip, Message: "prerequisite failed"},
+	}}
+	doc := BuildDocument(rep, config.Config{OBAServerURL: "x"}, fixedTime())
+	if doc.Groups[0].Counts.Skip != 1 || doc.Summary.Counts.Skip != 1 {
+		t.Errorf("skip not counted: group=%+v summary=%+v", doc.Groups[0].Counts, doc.Summary.Counts)
+	}
+	if doc.Summary.Total != 1 || doc.Summary.Verdict != "PASS" || doc.Summary.ExitCode != 0 {
+		t.Errorf("skip-only run: total=%d verdict=%q exit=%d want 1/PASS/0", doc.Summary.Total, doc.Summary.Verdict, doc.Summary.ExitCode)
+	}
+}
+
+func TestBuildDocument_LeftoverSourceGroup(t *testing.T) {
+	// Sources that match neither "" nor a configured dataSource[i] must still be
+	// emitted (sorted) so no data is dropped.
+	rep := validator.Report{Results: []validator.Result{
+		{Check: "a", Status: validator.Pass, Source: "zzz"},
+		{Check: "b", Status: validator.Fail, Source: "dataSource[5]"},
+	}}
+	cfg := config.Config{OBAServerURL: "x", DataSources: []config.DataSource{{}}}
+	doc := BuildDocument(rep, cfg, fixedTime())
+	if len(doc.Groups) != 4 {
+		t.Fatalf("groups=%d want 4 (server, dataSource[0], dataSource[5], zzz)", len(doc.Groups))
+	}
+	if doc.Groups[2].ID != "dataSource[5]" || doc.Groups[3].ID != "zzz" {
+		t.Errorf("leftover groups not sorted: %q, %q", doc.Groups[2].ID, doc.Groups[3].ID)
+	}
+	if doc.Summary.Total != 2 {
+		t.Errorf("total=%d want 2 (leftover results still counted)", doc.Summary.Total)
+	}
+}
+
+func TestBuildDocument_DetailsPassthroughAndOmit(t *testing.T) {
+	doc := BuildDocument(sampleReport(), sampleConfig(), fixedTime())
+	it := doc.Groups[1].Results[0] // the vehicle-positions result with Details
+	if it.Details["vehicleId"] != "1_1234" {
+		t.Errorf("details not passed through: %+v", it.Details)
+	}
+	// A result with nil Details omits the field entirely.
+	b, _ := json.Marshal(doc.Groups[0].Results[0])
+	if strings.Contains(string(b), "details") {
+		t.Errorf("nil details should be omitted:\n%s", b)
+	}
+}
+
+func TestBuildDocument_NoDataSources(t *testing.T) {
+	rep := validator.Report{Results: []validator.Result{{Check: "x", Status: validator.Pass}}}
+	doc := BuildDocument(rep, config.Config{OBAServerURL: "x"}, fixedTime())
+	if len(doc.Groups) != 1 || doc.Groups[0].ID != "server" {
+		t.Errorf("expected only a server group, got %d groups", len(doc.Groups))
+	}
+	b, _ := json.Marshal(doc.Meta)
+	if !strings.Contains(string(b), `"dataSources":[]`) {
+		t.Errorf("empty dataSources must marshal as [] not null:\n%s", b)
+	}
+}
+
+func TestBuildDocument_Deterministic(t *testing.T) {
+	a, _ := json.Marshal(BuildDocument(sampleReport(), sampleConfig(), fixedTime()))
+	b, _ := json.Marshal(BuildDocument(sampleReport(), sampleConfig(), fixedTime()))
+	if string(a) != string(b) {
+		t.Errorf("output not deterministic:\n%s\n---\n%s", a, b)
+	}
+}
+
+func TestBuildDocument_RedactsMessage(t *testing.T) {
+	rep := validator.Report{Results: []validator.Result{
+		{Check: "x", Status: validator.Fail, Message: "failed talking to https://x/?key=SEKRET"},
+	}}
+	cfg := config.Config{OBAServerURL: "https://x", APIKey: "SEKRET"}
+	doc := BuildDocument(rep, cfg, fixedTime())
+	if strings.Contains(doc.Groups[0].Results[0].Message, "SEKRET") {
+		t.Errorf("apiKey not redacted from message: %q", doc.Groups[0].Results[0].Message)
+	}
+}

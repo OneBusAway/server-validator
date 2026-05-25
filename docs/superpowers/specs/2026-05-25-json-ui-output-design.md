@@ -137,10 +137,10 @@ validator.Run ──err──▶ (--json? WriteErrorJSON : text) ; exit 2
 ### Security
 
 `apiKey` is never placed in the document. As defense in depth, every echoed URL
-in `meta` is passed through a redactor that replaces the apiKey substring with
-`REDACTED` if it ever appears (mirrors the existing `redact(err, key)` rule in
-the validator). `Details` values pass through unchanged — checks are already
-responsible for redacting them at the source.
+in `meta` **and every result message** is passed through a redactor that replaces
+the apiKey substring with `***` if it ever appears (mirrors the existing
+`redact(err, key)` rule in the validator). `Details` values pass through
+unchanged — checks are already responsible for redacting them at the source.
 
 ## Output shape (error)
 

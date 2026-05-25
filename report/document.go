@@ -48,7 +48,8 @@ type Summary struct {
 	Counts   Counts `json:"counts"`
 }
 
-// Counts tallies results by status. Keys are lowercase; values always present.
+// Counts tallies results by status. All four fields are always serialized (no
+// omitempty), so a UI can rely on every count being present, including zeros.
 type Counts struct {
 	Pass int `json:"pass"`
 	Warn int `json:"warn"`
@@ -56,17 +57,21 @@ type Counts struct {
 	Skip int `json:"skip"`
 }
 
-// add increments the tally for an uppercase status string (PASS/WARN/FAIL/SKIP).
-func (c *Counts) add(status string) {
+// add increments the tally for a status. It takes the typed validator.Status so
+// the compiler keeps this switch in sync with the enum; an out-of-range value is
+// a programming error and panics rather than being silently dropped.
+func (c *Counts) add(status validator.Status) {
 	switch status {
-	case "PASS":
+	case validator.Pass:
 		c.Pass++
-	case "WARN":
+	case validator.Warn:
 		c.Warn++
-	case "FAIL":
+	case validator.Fail:
 		c.Fail++
-	case "SKIP":
+	case validator.Skip:
 		c.Skip++
+	default:
+		panic(fmt.Sprintf("report: unexpected status %v", status))
 	}
 }
 
@@ -104,8 +109,8 @@ func splitCheck(check string) (category, step string) {
 }
 
 // redactString replaces the apiKey substring with "***" (matching the
-// validator's redact convention) so a secret never reaches output. A no-op when
-// apiKey is empty.
+// validator's redact convention in validator/util.go — keep the token in sync)
+// so a secret never reaches output. A no-op when apiKey is empty.
 func redactString(s, apiKey string) string {
 	if apiKey == "" {
 		return s
@@ -115,18 +120,21 @@ func redactString(s, apiKey string) string {
 
 // BuildDocument transforms a validation report and its config into the
 // UI-oriented Document. It is pure: pass time.Now().UTC() for now in production
-// and a fixed time in tests. The apiKey is never echoed; URLs are redacted.
+// and a fixed time in tests. The apiKey is never copied into the Document, and
+// any occurrence of cfg.APIKey in echoed URLs and result messages is replaced
+// with "***" (a no-op when the key is empty). Result Details pass through
+// unchanged — checks are responsible for redacting them at the source.
 func BuildDocument(rep validator.Report, cfg config.Config, now time.Time) Document {
 	bySource := map[string][]validator.Result{}
 	for _, r := range rep.Results {
 		bySource[r.Source] = append(bySource[r.Source], r)
 	}
 
-	groups := []Group{buildGroup("server", "Server", bySource[""])}
+	groups := []Group{buildGroup("server", "Server", bySource[""], cfg.APIKey)}
 	delete(bySource, "")
 	for i := range cfg.DataSources {
 		id := fmt.Sprintf("dataSource[%d]", i)
-		groups = append(groups, buildGroup(id, fmt.Sprintf("Data source %d", i), bySource[id]))
+		groups = append(groups, buildGroup(id, fmt.Sprintf("Data source %d", i), bySource[id], cfg.APIKey))
 		delete(bySource, id)
 	}
 	// Any result with an unrecognized source is emitted in a trailing group
@@ -137,7 +145,7 @@ func BuildDocument(rep validator.Report, cfg config.Config, now time.Time) Docum
 	}
 	sort.Strings(leftover)
 	for _, k := range leftover {
-		groups = append(groups, buildGroup(k, k, bySource[k]))
+		groups = append(groups, buildGroup(k, k, bySource[k], cfg.APIKey))
 	}
 
 	return Document{
@@ -148,20 +156,19 @@ func BuildDocument(rep validator.Report, cfg config.Config, now time.Time) Docum
 	}
 }
 
-func buildGroup(id, label string, results []validator.Result) Group {
+func buildGroup(id, label string, results []validator.Result, apiKey string) Group {
 	g := Group{ID: id, Label: label, Results: []Item{}}
 	for _, r := range results {
 		cat, step := splitCheck(r.Check)
-		status := r.Status.String()
 		g.Results = append(g.Results, Item{
 			Check:    r.Check,
 			Category: cat,
 			Step:     step,
-			Status:   status,
-			Message:  r.Message,
+			Status:   r.Status.String(),
+			Message:  redactString(r.Message, apiKey), // defense in depth; checks redact upstream
 			Details:  r.Details,
 		})
-		g.Counts.add(status)
+		g.Counts.add(r.Status)
 	}
 	return g
 }
@@ -201,7 +208,7 @@ func buildSummary(rep validator.Report, groups []Group) Summary {
 	return Summary{
 		Verdict:  verdict,
 		ExitCode: rep.ExitCode(),
-		Total:    total.Pass + total.Warn + total.Fail + total.Skip,
+		Total:    len(rep.Results),
 		Counts:   total,
 	}
 }

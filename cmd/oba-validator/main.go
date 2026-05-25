@@ -19,10 +19,11 @@ import (
 var apiKeyInJSON = regexp.MustCompile(`"apiKey"\s*:\s*"((?:\\.|[^"\\])*)"`)
 
 // redactionKey returns the apiKey to scrub from a config-load error. config.Load
-// can fail before it parses the key — notably when a raw-JSON argument that does
-// not start with '{' is misread as a file path, whose os.ReadFile error echoes
-// the raw input (and thus an inline apiKey) verbatim. The parsed cfg is empty in
-// that case, so prefer a key sniffed straight from the argument, falling back to
+// can fail before it parses the key and echo the raw argument (and thus an inline
+// apiKey) into its error — either when a raw-JSON argument that does not start
+// with '{' is misread as a file path (the os.ReadFile error wraps the input), or
+// when a malformed object fails to parse. config.Load returns an empty Config in
+// both cases, so prefer a key sniffed straight from the argument, falling back to
 // the environment.
 func redactionKey(arg string) string {
 	if m := apiKeyInJSON.FindStringSubmatch(arg); m != nil && m[1] != "" {
@@ -110,7 +111,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "output error:", werr)
 			}
 		} else {
-			fmt.Fprintln(stderr, "run error:", err)
+			msg := err.Error()
+			if cfg.APIKey != "" {
+				msg = strings.ReplaceAll(msg, cfg.APIKey, "***")
+			}
+			fmt.Fprintln(stderr, "run error:", msg)
 		}
 		return 2
 	}
