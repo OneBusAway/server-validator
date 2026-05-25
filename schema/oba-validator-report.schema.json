@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/onebusaway/oba-validator/schema/oba-validator-report.schema.json",
+  "title": "OBA Validator Output",
+  "description": "Output of `oba-validator --json`: either a validation report document or an error document. Both carry a top-level schemaVersion.",
+  "oneOf": [
+    { "$ref": "#/$defs/reportDocument" },
+    { "$ref": "#/$defs/errorDocument" }
+  ],
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "WARN", "FAIL", "SKIP"]
+    },
+    "counts": {
+      "type": "object",
+      "description": "Result tallies by status.",
+      "additionalProperties": false,
+      "required": ["pass", "warn", "fail", "skip"],
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "warn": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "skip": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "item": {
+      "type": "object",
+      "description": "One check result. category/step are the check name split on the first '/'.",
+      "additionalProperties": false,
+      "required": ["check", "category", "status", "message"],
+      "properties": {
+        "check": { "type": "string" },
+        "category": { "type": "string" },
+        "step": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "message": { "type": "string" },
+        "details": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "group": {
+      "type": "object",
+      "description": "A section of results: the server, or one data source.",
+      "additionalProperties": false,
+      "required": ["id", "label", "counts", "results"],
+      "properties": {
+        "id": { "type": "string", "description": "'server' or 'dataSource[N]'; joins to meta.dataSources[].id." },
+        "label": { "type": "string" },
+        "counts": { "$ref": "#/$defs/counts" },
+        "results": { "type": "array", "items": { "$ref": "#/$defs/item" } }
+      }
+    },
+    "metaSource": {
+      "type": "object",
+      "description": "Echo of one configured data source. The apiKey is never present.",
+      "additionalProperties": false,
+      "required": ["id", "index"],
+      "properties": {
+        "id": { "type": "string" },
+        "index": { "type": "integer", "minimum": 0 },
+        "staticGtfsFeedURL": { "type": "string" },
+        "vehiclePositionsURL": { "type": "string" },
+        "tripUpdatesURL": { "type": "string" },
+        "serviceAlertsURL": { "type": "string" },
+        "agencyMapping": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generatedAt", "obaServerURL", "dataSources"],
+      "properties": {
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "obaServerURL": { "type": "string" },
+        "dataSources": { "type": "array", "items": { "$ref": "#/$defs/metaSource" } }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "exitCode", "total", "counts"],
+      "properties": {
+        "verdict": { "type": "string", "enum": ["PASS", "FAIL"] },
+        "exitCode": { "type": "integer", "enum": [0, 1] },
+        "total": { "type": "integer", "minimum": 0 },
+        "counts": { "$ref": "#/$defs/counts" }
+      }
+    },
+    "reportDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "meta", "summary", "groups"],
+      "properties": {
+        "schemaVersion": { "type": "string" },
+        "meta": { "$ref": "#/$defs/meta" },
+        "summary": { "$ref": "#/$defs/summary" },
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/group" } }
+      }
+    },
+    "errorDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "error"],
+      "properties": {
+        "schemaVersion": { "type": "string" },
+        "error": { "type": "string" }
+      }
+    }
+  }
+}
