@@ -1,0 +1,6 @@
+bin/
+.git/
+.github/
+docs/
+example_configs/
+*.md
