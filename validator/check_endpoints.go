@@ -31,8 +31,8 @@ func (endpointsCheck) Run(ctx context.Context, vc *ValidationContext) []Result {
 
 	// 1. current-time
 	ct, err := vc.Client.CurrentTime.Get(ctx)
-	if err != nil {
-		add("current-time", Fail, "current-time failed: "+redact(err, key), nil)
+	if err != nil || ct == nil {
+		add("current-time", Fail, withReason("current-time failed", err, key), nil)
 		skipRest("current-time failed")
 		return out
 	}
@@ -48,7 +48,7 @@ func (endpointsCheck) Run(ctx context.Context, vc *ValidationContext) []Result {
 
 	// 2. agencies-with-coverage (pre-fetched into the context)
 	if vc.Agencies == nil || vc.AgenciesErr != nil {
-		add("agencies-with-coverage", Fail, "agencies-with-coverage failed: "+redact(vc.AgenciesErr, key), nil)
+		add("agencies-with-coverage", Fail, withReason("agencies-with-coverage failed", vc.AgenciesErr, key), nil)
 		pop()
 		skipRest("agencies-with-coverage failed")
 		return out
@@ -65,8 +65,8 @@ func (endpointsCheck) Run(ctx context.Context, vc *ValidationContext) []Result {
 
 	// 3. routes-for-agency
 	routes, err := vc.Client.RoutesForAgency.List(ctx, agencyID)
-	if err != nil || len(routes.Data.List) == 0 {
-		add("routes-for-agency", Fail, "routes-for-agency empty/failed: "+redact(err, key), map[string]any{"agencyId": agencyID})
+	if err != nil || routes == nil || len(routes.Data.List) == 0 {
+		add("routes-for-agency", Fail, withReason("routes-for-agency empty/failed", err, key), map[string]any{"agencyId": agencyID})
 		pop()
 		skipRest("routes-for-agency failed")
 		return out
@@ -77,8 +77,8 @@ func (endpointsCheck) Run(ctx context.Context, vc *ValidationContext) []Result {
 
 	// 4. stops-for-route
 	sfr, err := vc.Client.StopsForRoute.List(ctx, routeID, onebusaway.StopsForRouteListParams{})
-	if err != nil || len(sfr.Data.Entry.StopIDs) == 0 {
-		add("stops-for-route", Fail, "stops-for-route empty/failed: "+redact(err, key), map[string]any{"routeId": routeID})
+	if err != nil || sfr == nil || len(sfr.Data.Entry.StopIDs) == 0 {
+		add("stops-for-route", Fail, withReason("stops-for-route empty/failed", err, key), map[string]any{"routeId": routeID})
 		pop()
 		skipRest("stops-for-route failed")
 		return out
@@ -89,8 +89,8 @@ func (endpointsCheck) Run(ctx context.Context, vc *ValidationContext) []Result {
 
 	// 5. stop
 	st, err := vc.Client.Stop.Get(ctx, stopID)
-	if err != nil || st.Data.Entry.ID != stopID {
-		add("stop", Fail, "stop lookup failed/mismatch: "+redact(err, key), map[string]any{"stopId": stopID})
+	if err != nil || st == nil || st.Data.Entry.ID != stopID {
+		add("stop", Fail, withReason("stop lookup failed/mismatch", err, key), map[string]any{"stopId": stopID})
 		pop()
 		skipRest("stop failed")
 		return out
@@ -104,8 +104,8 @@ func (endpointsCheck) Run(ctx context.Context, vc *ValidationContext) []Result {
 		Lat: onebusaway.Float(lat),
 		Lon: onebusaway.Float(lon),
 	})
-	if err != nil || loc.Data.OutOfRange || len(loc.Data.List) == 0 {
-		add("stops-for-location", Fail, "stops-for-location empty/out-of-range/failed: "+redact(err, key), nil)
+	if err != nil || loc == nil || loc.Data.OutOfRange || len(loc.Data.List) == 0 {
+		add("stops-for-location", Fail, withReason("stops-for-location empty/out-of-range/failed", err, key), nil)
 		pop()
 		skipRest("stops-for-location failed")
 		return out
@@ -115,8 +115,8 @@ func (endpointsCheck) Run(ctx context.Context, vc *ValidationContext) []Result {
 
 	// 7. arrivals-and-departures-for-stop
 	ad, err := vc.Client.ArrivalAndDeparture.List(ctx, stopID, onebusaway.ArrivalAndDepartureListParams{})
-	if err != nil {
-		add("arrivals-and-departures-for-stop", Fail, "arrivals failed: "+redact(err, key), map[string]any{"stopId": stopID})
+	if err != nil || ad == nil {
+		add("arrivals-and-departures-for-stop", Fail, withReason("arrivals failed", err, key), map[string]any{"stopId": stopID})
 		return out
 	}
 	n := len(ad.Data.Entry.ArrivalsAndDepartures)

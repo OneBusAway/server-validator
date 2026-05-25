@@ -103,3 +103,31 @@ func TestTripUpdateSampling404StopWarns(t *testing.T) {
 		t.Errorf("404 on stop should Warn (not Fail), got %+v", results)
 	}
 }
+
+// A `null` arrivals response (nil SDK response, nil error) must not be mistaken
+// for "predicted trip absent" and Fail — it is an unconfirmed query, so Warn.
+func TestTripUpdateNullArrivalsResponseWarns(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "arrivals-and-departures-for-stop") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`null`))
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+	})
+	src := &SourceContext{
+		Label:      "ds0",
+		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
+		PrepErrors: map[string]error{},
+		Static:     staticForVehicle(),
+		TripUpdates: &gtfs.Realtime{Trips: []gtfs.Trip{{
+			ID:              gtfs.TripID{ID: "T1", RouteID: "R1"},
+			StopTimeUpdates: []gtfs.StopTimeUpdate{{StopID: strp("ST1"), Arrival: &gtfs.StopTimeEvent{}}},
+		}}},
+	}
+	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
+	results := tripUpdateSamplingCheck{}.Run(context.Background(), vc, src)
+	if len(results) == 0 || results[0].Status != Warn {
+		t.Errorf("null arrivals response: want Warn, got %+v", results)
+	}
+}

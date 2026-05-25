@@ -54,6 +54,12 @@ func (serviceAlertCheck) Run(ctx context.Context, vc *ValidationContext, src *So
 				Message: fmt.Sprintf("could not query stop %q (agency prefix may be wrong): %s", obaStop, redact(err, key))})
 			continue
 		}
+		if ad == nil {
+			out = append(out, Result{Check: name, Source: src.Label, Status: Warn,
+				Message: fmt.Sprintf("arrivals query for stop %q returned a null response", obaStop),
+				Details: map[string]any{"stopId": obaStop}})
+			continue
+		}
 		anySituation := false
 		matched := false
 		for _, adp := range ad.Data.Entry.ArrivalsAndDepartures {

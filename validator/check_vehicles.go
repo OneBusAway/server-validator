@@ -59,6 +59,11 @@ func (vehicleSamplingCheck) Run(ctx context.Context, vc *ValidationContext, src 
 		case err != nil:
 			out = append(out, Result{Check: name + "/vehicles-for-agency", Source: src.Label, Status: Fail,
 				Message: "vehicles-for-agency failed: " + redact(err, key), Details: map[string]any{"agencyId": agency}})
+		case vfa == nil:
+			// Same evidence as the empty-list branch below — the feed proves the
+			// agency has vehicles, the API returned none — so Fail, not Warn.
+			out = append(out, Result{Check: name + "/vehicles-for-agency", Source: src.Label, Status: Fail,
+				Message: fmt.Sprintf("vehicles-for-agency %q returned a null response while feed has vehicles", agency), Details: map[string]any{"agencyId": agency}})
 		case len(vfa.Data.List) == 0:
 			out = append(out, Result{Check: name + "/vehicles-for-agency", Source: src.Label, Status: Fail,
 				Message: fmt.Sprintf("vehicles-for-agency %q empty while feed has vehicles", agency)})
@@ -88,6 +93,9 @@ func (vehicleSamplingCheck) Run(ctx context.Context, vc *ValidationContext, src 
 		case err != nil:
 			out = append(out, Result{Check: name + "/trip-for-vehicle", Source: src.Label, Status: Warn,
 				Message: "trip-for-vehicle returned no current trip: " + redact(err, key), Details: map[string]any{"vehicleId": obaVeh}})
+		case tfv == nil:
+			out = append(out, Result{Check: name + "/trip-for-vehicle", Source: src.Label, Status: Warn,
+				Message: fmt.Sprintf("trip-for-vehicle returned a null response for vehicle %q", rawVeh), Details: map[string]any{"vehicleId": obaVeh}})
 		case IDMatch(tfv.Data.Entry.TripID, rawTrip, agency):
 			out = append(out, Result{Check: name + "/trip-for-vehicle", Source: src.Label, Status: Pass,
 				Message: fmt.Sprintf("vehicle %q on expected trip %q", rawVeh, rawTrip)})
@@ -116,6 +124,11 @@ func (vehicleSamplingCheck) Run(ctx context.Context, vc *ValidationContext, src 
 		if err != nil {
 			out = append(out, Result{Check: name + "/trips-for-location", Source: src.Label, Status: Warn,
 				Message: "trips-for-location failed: " + redact(err, key)})
+			continue
+		}
+		if tfl == nil {
+			out = append(out, Result{Check: name + "/trips-for-location", Source: src.Label, Status: Warn,
+				Message: fmt.Sprintf("trips-for-location returned a null response near vehicle %q", rawVeh)})
 			continue
 		}
 		found := false

@@ -12,7 +12,7 @@ func (agencyUnionCheck) Name() string { return "agency-union" }
 func (agencyUnionCheck) Run(ctx context.Context, vc *ValidationContext) []Result {
 	const name = "agency-union"
 	if vc.AgenciesErr != nil || vc.Agencies == nil {
-		return []Result{{Check: name, Status: Fail, Message: "agencies-with-coverage unavailable: " + redact(vc.AgenciesErr, vc.Config.APIKey)}}
+		return []Result{{Check: name, Status: Fail, Message: withReason("agencies-with-coverage unavailable", vc.AgenciesErr, vc.Config.APIKey)}}
 	}
 
 	apiSet := map[string]bool{}

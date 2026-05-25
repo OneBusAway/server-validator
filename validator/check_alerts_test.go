@@ -37,6 +37,34 @@ func TestServiceAlertFoundInSituationIDs(t *testing.T) {
 	}
 }
 
+// A `null` arrivals response (nil SDK response, nil error) must not be mistaken
+// for "stop has no situations" and Fail — it is an unconfirmed query, so Warn.
+func TestServiceAlertNullArrivalsResponseWarns(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "arrivals-and-departures-for-stop") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`null`))
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+	})
+	src := &SourceContext{
+		Label:      "ds0",
+		Config:     config.DataSource{AgencyMapping: map[string]string{"KCM": "1"}},
+		PrepErrors: map[string]error{},
+		Static:     staticForVehicle(),
+		ServiceAlerts: &gtfs.Realtime{Alerts: []gtfs.Alert{{
+			ID:               "ALERT1",
+			InformedEntities: []gtfs.AlertInformedEntity{{StopID: strp("ST1")}},
+		}}},
+	}
+	vc := &ValidationContext{Config: cfgForTest("test"), Client: client}
+	results := serviceAlertCheck{}.Run(context.Background(), vc, src)
+	if len(results) == 0 || results[0].Status != Warn {
+		t.Errorf("null arrivals response: want Warn, got %+v", results)
+	}
+}
+
 func TestServiceAlertNoSamplableWarns(t *testing.T) {
 	src := &SourceContext{
 		Label:         "ds0",
