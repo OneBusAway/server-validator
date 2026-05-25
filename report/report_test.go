@@ -5,33 +5,42 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/onebusaway/oba-validator/validator"
 )
-
-func sampleReport() validator.Report {
-	return validator.Report{Results: []validator.Result{
-		{Check: "basic-endpoints/current-time", Status: validator.Pass, Message: "OK"},
-		{Check: "vehicle-positions-sampling", Source: "dataSource[0]", Status: validator.Fail, Message: "missing"},
-	}}
-}
 
 func TestWriteJSON(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteJSON(&buf, sampleReport()); err != nil {
+	if err := WriteJSON(&buf, sampleReport(), sampleConfig()); err != nil {
 		t.Fatal(err)
 	}
-	var back struct {
-		Results []struct {
-			Check  string `json:"check"`
-			Status string `json:"status"`
-		} `json:"results"`
+	var doc Document
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("output not a Document: %v\n%s", err, buf.String())
 	}
-	if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
+	if doc.SchemaVersion != SchemaVersion {
+		t.Errorf("schemaVersion=%q", doc.SchemaVersion)
+	}
+	if len(doc.Groups) != 2 || doc.Summary.Verdict != "FAIL" {
+		t.Errorf("unexpected document: %+v", doc.Summary)
+	}
+	if !strings.Contains(buf.String(), "\n  ") {
+		t.Error("expected indented JSON")
+	}
+}
+
+func TestWriteErrorJSON(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteErrorJSON(&buf, "boom with SEKRET", "SEKRET"); err != nil {
 		t.Fatal(err)
 	}
-	if back.Results[1].Status != "FAIL" {
-		t.Errorf("status=%q want FAIL", back.Results[1].Status)
+	var ed ErrorDocument
+	if err := json.Unmarshal(buf.Bytes(), &ed); err != nil {
+		t.Fatalf("output not an ErrorDocument: %v\n%s", err, buf.String())
+	}
+	if ed.SchemaVersion != SchemaVersion {
+		t.Errorf("schemaVersion=%q", ed.SchemaVersion)
+	}
+	if strings.Contains(ed.Error, "SEKRET") || !strings.Contains(ed.Error, "***") {
+		t.Errorf("error not redacted: %q", ed.Error)
 	}
 }
 
@@ -54,7 +63,7 @@ func TestWriteTextSummaryLine(t *testing.T) {
 	if err := WriteText(&buf, sampleReport()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "FAIL (2 checks, 1 failed, 0 warnings)") {
+	if !strings.Contains(buf.String(), "FAIL (4 checks, 1 failed, 1 warnings)") {
 		t.Errorf("summary line wrong:\n%s", buf.String())
 	}
 }

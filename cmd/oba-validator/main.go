@@ -81,7 +81,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var werr error
 	if o.jsonOut {
-		werr = report.WriteJSON(stdout, rep)
+		werr = report.WriteJSON(stdout, rep, cfg)
 	} else {
 		werr = report.WriteText(stdout, rep)
 	}

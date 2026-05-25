@@ -5,15 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
+	"github.com/onebusaway/oba-validator/config"
 	"github.com/onebusaway/oba-validator/validator"
 )
 
-// WriteJSON writes the report as indented JSON.
-func WriteJSON(w io.Writer, rep validator.Report) error {
+// WriteJSON writes the report as an indented, UI-oriented JSON Document.
+func WriteJSON(w io.Writer, rep validator.Report, cfg config.Config) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(rep)
+	return enc.Encode(BuildDocument(rep, cfg, time.Now().UTC()))
+}
+
+// WriteErrorJSON writes an indented ErrorDocument to w, redacting apiKey from msg.
+func WriteErrorJSON(w io.Writer, msg, apiKey string) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(ErrorDocument{SchemaVersion: SchemaVersion, Error: redactString(msg, apiKey)})
 }
 
 // WriteText writes a human-readable, grouped report with a summary line.

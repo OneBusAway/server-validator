@@ -1,6 +1,14 @@
 package report
 
-import "strings"
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/onebusaway/oba-validator/config"
+	"github.com/onebusaway/oba-validator/validator"
+)
 
 // SchemaVersion is the version of the JSON document shape emitted by WriteJSON.
 // It appears as the top-level "schemaVersion" field of every document.
@@ -103,4 +111,97 @@ func redactString(s, apiKey string) string {
 		return s
 	}
 	return strings.ReplaceAll(s, apiKey, "***")
+}
+
+// BuildDocument transforms a validation report and its config into the
+// UI-oriented Document. It is pure: pass time.Now().UTC() for now in production
+// and a fixed time in tests. The apiKey is never echoed; URLs are redacted.
+func BuildDocument(rep validator.Report, cfg config.Config, now time.Time) Document {
+	bySource := map[string][]validator.Result{}
+	for _, r := range rep.Results {
+		bySource[r.Source] = append(bySource[r.Source], r)
+	}
+
+	groups := []Group{buildGroup("server", "Server", bySource[""])}
+	delete(bySource, "")
+	for i := range cfg.DataSources {
+		id := fmt.Sprintf("dataSource[%d]", i)
+		groups = append(groups, buildGroup(id, fmt.Sprintf("Data source %d", i), bySource[id]))
+		delete(bySource, id)
+	}
+	// Any result with an unrecognized source is emitted in a trailing group
+	// (sorted) so no data is ever dropped.
+	leftover := make([]string, 0, len(bySource))
+	for k := range bySource {
+		leftover = append(leftover, k)
+	}
+	sort.Strings(leftover)
+	for _, k := range leftover {
+		groups = append(groups, buildGroup(k, k, bySource[k]))
+	}
+
+	return Document{
+		SchemaVersion: SchemaVersion,
+		Meta:          buildMeta(cfg, now),
+		Summary:       buildSummary(rep, groups),
+		Groups:        groups,
+	}
+}
+
+func buildGroup(id, label string, results []validator.Result) Group {
+	g := Group{ID: id, Label: label, Results: []Item{}}
+	for _, r := range results {
+		cat, step := splitCheck(r.Check)
+		status := r.Status.String()
+		g.Results = append(g.Results, Item{
+			Check:    r.Check,
+			Category: cat,
+			Step:     step,
+			Status:   status,
+			Message:  r.Message,
+			Details:  r.Details,
+		})
+		g.Counts.add(status)
+	}
+	return g
+}
+
+func buildMeta(cfg config.Config, now time.Time) Meta {
+	m := Meta{
+		GeneratedAt:  now.UTC().Format(time.RFC3339),
+		OBAServerURL: redactString(cfg.OBAServerURL, cfg.APIKey),
+		DataSources:  make([]MetaSource, 0, len(cfg.DataSources)),
+	}
+	for i, ds := range cfg.DataSources {
+		m.DataSources = append(m.DataSources, MetaSource{
+			ID:                  fmt.Sprintf("dataSource[%d]", i),
+			Index:               i,
+			StaticGtfsFeedURL:   redactString(ds.StaticGtfsFeedURL, cfg.APIKey),
+			VehiclePositionsURL: redactString(ds.VehiclePositionsURL, cfg.APIKey),
+			TripUpdatesURL:      redactString(ds.TripUpdatesURL, cfg.APIKey),
+			ServiceAlertsURL:    redactString(ds.ServiceAlertsURL, cfg.APIKey),
+			AgencyMapping:       ds.AgencyMapping,
+		})
+	}
+	return m
+}
+
+func buildSummary(rep validator.Report, groups []Group) Summary {
+	var total Counts
+	for _, g := range groups {
+		total.Pass += g.Counts.Pass
+		total.Warn += g.Counts.Warn
+		total.Fail += g.Counts.Fail
+		total.Skip += g.Counts.Skip
+	}
+	verdict := "PASS"
+	if rep.Worst() == validator.Fail {
+		verdict = "FAIL"
+	}
+	return Summary{
+		Verdict:  verdict,
+		ExitCode: rep.ExitCode(),
+		Total:    total.Pass + total.Warn + total.Fail + total.Skip,
+		Counts:   total,
+	}
 }
