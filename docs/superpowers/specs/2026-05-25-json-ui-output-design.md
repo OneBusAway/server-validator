@@ -1,7 +1,7 @@
 # JSON-for-UI Output Mode — Design
 
 **Date:** 2026-05-25
-**Status:** Approved (design + both sign-off items); pending spec review
+**Status:** Implemented
 
 ## Purpose
 
