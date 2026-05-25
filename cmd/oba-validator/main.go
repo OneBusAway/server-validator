@@ -6,11 +6,31 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/onebusaway/oba-validator/config"
 	"github.com/onebusaway/oba-validator/report"
 	"github.com/onebusaway/oba-validator/validator"
 )
+
+// apiKeyInJSON matches an "apiKey" string field in a (possibly malformed) JSON
+// argument so its value can be scrubbed from error output.
+var apiKeyInJSON = regexp.MustCompile(`"apiKey"\s*:\s*"((?:\\.|[^"\\])*)"`)
+
+// redactionKey returns the apiKey to scrub from a config-load error. config.Load
+// can fail before it parses the key and echo the raw argument (and thus an inline
+// apiKey) into its error — either when a raw-JSON argument that does not start
+// with '{' is misread as a file path (the os.ReadFile error wraps the input), or
+// when a malformed object fails to parse. config.Load returns an empty Config in
+// both cases, so prefer a key sniffed straight from the argument, falling back to
+// the environment.
+func redactionKey(arg string) string {
+	if m := apiKeyInJSON.FindStringSubmatch(arg); m != nil && m[1] != "" {
+		return m[1]
+	}
+	return os.Getenv("ONEBUSAWAY_API_KEY")
+}
 
 type overrides struct {
 	jsonOut    bool
@@ -68,20 +88,41 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	cfg, err := config.Load(fs.Arg(0))
 	if err != nil {
-		fmt.Fprintln(stderr, "config error:", err)
+		key := redactionKey(fs.Arg(0))
+		if o.jsonOut {
+			if werr := report.WriteErrorJSON(stdout, err.Error(), key); werr != nil {
+				fmt.Fprintln(stderr, "output error:", werr)
+			}
+		} else {
+			msg := err.Error()
+			if key != "" {
+				msg = strings.ReplaceAll(msg, key, "***")
+			}
+			fmt.Fprintln(stderr, "config error:", msg)
+		}
 		return 2
 	}
 	applyOverrides(&cfg, o)
 
 	rep, err := validator.Run(context.Background(), cfg)
 	if err != nil {
-		fmt.Fprintln(stderr, "run error:", err)
+		if o.jsonOut {
+			if werr := report.WriteErrorJSON(stdout, err.Error(), cfg.APIKey); werr != nil {
+				fmt.Fprintln(stderr, "output error:", werr)
+			}
+		} else {
+			msg := err.Error()
+			if cfg.APIKey != "" {
+				msg = strings.ReplaceAll(msg, cfg.APIKey, "***")
+			}
+			fmt.Fprintln(stderr, "run error:", msg)
+		}
 		return 2
 	}
 
 	var werr error
 	if o.jsonOut {
-		werr = report.WriteJSON(stdout, rep)
+		werr = report.WriteJSON(stdout, rep, cfg)
 	} else {
 		werr = report.WriteText(stdout, rep)
 	}

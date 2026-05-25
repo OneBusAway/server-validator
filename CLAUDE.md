@@ -32,7 +32,7 @@ The flow is **config → prepare (fetch) → checks → report**:
 1. **`config`** — `config.Load()` accepts a file path *or* a raw JSON string (auto-detected by a leading `{`). Applies defaults, validates required fields, and reads `apiKey` from `ONEBUSAWAY_API_KEY` if absent.
 2. **`feeds`** — fetching + parsing. `Fetcher` downloads feeds; static GTFS goes through an on-disk **conditional-GET `Cache`** (ETag/Last-Modified, atomic body-then-meta writes), realtime feeds are always fetched fresh. `ParsedStatic` wraps go-gtfs's `Static` with the lookup indexes checks need (agency IDs/names, raw trip→agency, raw route→agency).
 3. **`validator`** — the engine. `validator.Run()` calls `prepare()`, then runs every check.
-4. **`report`** — renders a `Report` as grouped text (`WriteText`) or indented JSON (`WriteJSON`).
+4. **`report`** — renders a `Report` as grouped text (`WriteText`) or, via `WriteJSON`, a UI-oriented JSON `Document` (meta + summary + grouped results; schema at `schema/oba-validator-report.schema.json`). `WriteErrorJSON` emits the error variant. The `Document` view model is built by the pure `BuildDocument(report, config, now)` so output is deterministic in tests.
 
 `prepare()` (`validator/validator.go`) builds the shared `ValidationContext`: it constructs the OBA SDK client, fetches `AgenciesWithCoverage` once, and **fans out concurrently** (bounded by `MaxConcurrency`, default 4) to download/parse each data source's feeds into a `SourceContext`. A per-feed fetch/parse failure is recorded in `SourceContext.PrepErrors[feedName]` rather than aborting the run — checks inspect that map and decide severity themselves.
 

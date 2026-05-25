@@ -2,6 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/onebusaway/oba-validator/config"
@@ -34,5 +38,86 @@ func TestUsageWhenTooManyArgs(t *testing.T) {
 	}
 	if stderr.Len() == 0 {
 		t.Error("expected usage on stderr")
+	}
+}
+
+func TestRunJSONConfigErrorEmitsErrorJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"oba-validator", "--json", `{"dataSources":[]}`}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit=%d want 2", code)
+	}
+	var ed struct {
+		SchemaVersion string `json:"schemaVersion"`
+		Error         string `json:"error"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &ed); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	if ed.Error == "" || ed.SchemaVersion == "" {
+		t.Errorf("missing fields in error doc: %s", stdout.String())
+	}
+}
+
+func TestRunJSONOutputShape(t *testing.T) {
+	obaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "current-time"):
+			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
+		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
+			w.Write([]byte(`{"data":{"list":[],"references":{"agencies":[]}}}`))
+		default:
+			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
+		}
+	}))
+	defer obaSrv.Close()
+	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte{}) // empty payload -> prep error recorded, run still completes
+	}))
+	defer feedSrv.Close()
+
+	cfg := `{"obaServerURL":"` + obaSrv.URL + `","apiKey":"test","dataSources":[{"staticGtfsFeedURL":"` + feedSrv.URL + `/gtfs.zip"}]}`
+	var stdout, stderr bytes.Buffer
+	run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
+
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	for _, k := range []string{"schemaVersion", "meta", "summary", "groups"} {
+		if _, ok := doc[k]; !ok {
+			t.Errorf("missing key %q in output:\n%s", k, stdout.String())
+		}
+	}
+}
+
+func TestRunJSONConfigErrorRedactsInlineAPIKey(t *testing.T) {
+	t.Setenv("ONEBUSAWAY_API_KEY", "")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"oba-validator", "--json", `[{"obaServerURL":"https://x","apiKey":"SUPER-SECRET-KEY"}]`}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit=%d want 2", code)
+	}
+	if strings.Contains(stdout.String(), "SUPER-SECRET-KEY") {
+		t.Errorf("apiKey leaked to stdout:\n%s", stdout.String())
+	}
+	var ed struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &ed); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	if ed.Error == "" {
+		t.Errorf("expected an error message: %s", stdout.String())
+	}
+}
+
+func TestRunTextConfigErrorRedactsInlineAPIKey(t *testing.T) {
+	t.Setenv("ONEBUSAWAY_API_KEY", "")
+	var stdout, stderr bytes.Buffer
+	run([]string{"oba-validator", `[{"obaServerURL":"https://x","apiKey":"SUPER-SECRET-KEY"}]`}, &stdout, &stderr)
+	if strings.Contains(stderr.String(), "SUPER-SECRET-KEY") {
+		t.Errorf("apiKey leaked to stderr:\n%s", stderr.String())
 	}
 }

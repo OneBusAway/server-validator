@@ -41,9 +41,22 @@ to the `agencyId` the OBA server exposes; unmapped agencies default to identity.
 ```go
 cfg, _ := config.Load("config.json")  // or a raw JSON string
 rep, _ := validator.Run(ctx, cfg)
-report.WriteText(os.Stdout, rep)       // or report.WriteJSON(os.Stdout, rep)
+report.WriteText(os.Stdout, rep)       // or report.WriteJSON(os.Stdout, rep, cfg)
 os.Exit(rep.ExitCode())
 ```
+
+## JSON output
+
+`--json` emits a single structured document to stdout, designed for building a UI
+visualization. It contains `meta` (run inputs — never the apiKey), `summary`
+(verdict + status counts), and `groups` (a `server` group plus one per data
+source, each with its results). On failure before a report is produced, a
+an object like `{ "schemaVersion": "1.0", "error": "..." }` is emitted to stdout and the process exits 2.
+
+The full contract is published as a JSON Schema (draft 2020-12) at
+[`schema/oba-validator-report.schema.json`](schema/oba-validator-report.schema.json).
+This is the recommended format for the Render one-off-job workflow: the job
+prints the document to stdout and the caller reads it from the job output.
 
 ## Development
 
