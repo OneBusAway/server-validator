@@ -1,0 +1,82 @@
+package validator
+
+import (
+	"context"
+	"fmt"
+
+	gtfs "github.com/OneBusAway/go-gtfs"
+	onebusaway "github.com/OneBusAway/go-sdk"
+)
+
+type serviceAlertCheck struct{}
+
+func (serviceAlertCheck) Name() string { return "service-alert-crossref" }
+
+func (serviceAlertCheck) Run(ctx context.Context, vc *ValidationContext, src *SourceContext) []Result {
+	const name = "service-alert-crossref"
+	key := vc.Config.APIKey
+	if err := src.PrepErrors["serviceAlerts"]; err != nil {
+		return []Result{{Check: name, Source: src.Label, Status: Fail, Message: "service alerts feed unavailable: " + redact(err, key)}}
+	}
+	if src.ServiceAlerts == nil || len(src.ServiceAlerts.Alerts) == 0 {
+		return []Result{{Check: name, Source: src.Label, Status: Warn, Message: "no alerts in feed to sample"}}
+	}
+
+	type sampleAlert struct {
+		alert   gtfs.Alert
+		rawStop string
+	}
+	var usable []sampleAlert
+	for _, a := range src.ServiceAlerts.Alerts {
+		for _, ie := range a.InformedEntities {
+			if ie.StopID != nil && *ie.StopID != "" {
+				usable = append(usable, sampleAlert{alert: a, rawStop: *ie.StopID})
+				break
+			}
+		}
+	}
+	if len(usable) == 0 {
+		return []Result{{Check: name, Source: src.Label, Status: Warn, Message: "no alert references a stop id we can cross-check"}}
+	}
+	sample := sampleByID(usable, vc.Config.SampleSize, func(s sampleAlert) string { return s.alert.ID })
+
+	agency := ""
+	if len(src.Static.AgencyIDs) > 0 {
+		agency, _ = src.MapAgency(src.Static.AgencyIDs[0])
+	}
+
+	var out []Result
+	for _, s := range sample {
+		obaStop := PrefixedID(agency, s.rawStop)
+		ad, err := vc.Client.ArrivalAndDeparture.List(ctx, obaStop, onebusaway.ArrivalAndDepartureListParams{})
+		if err != nil {
+			out = append(out, Result{Check: name, Source: src.Label, Status: Fail,
+				Message: fmt.Sprintf("arrivals-and-departures-for-stop %q failed: %s", obaStop, redact(err, key))})
+			continue
+		}
+		anySituation := false
+		matched := false
+		for _, adp := range ad.Data.Entry.ArrivalsAndDepartures {
+			for _, sid := range adp.SituationIDs {
+				anySituation = true
+				if IDMatch(sid, s.alert.ID, agency) {
+					matched = true
+				}
+			}
+		}
+		switch {
+		case matched:
+			out = append(out, Result{Check: name, Source: src.Label, Status: Pass,
+				Message: fmt.Sprintf("alert %q surfaced at stop %q", s.alert.ID, s.rawStop)})
+		case !anySituation:
+			out = append(out, Result{Check: name, Source: src.Label, Status: Fail,
+				Message: fmt.Sprintf("stop %q has no situations though feed alert %q affects it", s.rawStop, s.alert.ID),
+				Details: map[string]any{"stopId": obaStop, "feedAlertId": s.alert.ID}})
+		default:
+			out = append(out, Result{Check: name, Source: src.Label, Status: Warn,
+				Message: fmt.Sprintf("stop %q has situations but none matched feed alert %q (OBA may re-id situations)", s.rawStop, s.alert.ID),
+				Details: map[string]any{"stopId": obaStop, "feedAlertId": s.alert.ID}})
+		}
+	}
+	return out
+}
