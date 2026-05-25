@@ -49,7 +49,7 @@ cycle — `config` depends on neither).
 
 ### Flow
 
-```
+```text
 config.Load ──err──▶ (--json? WriteErrorJSON : text) ; exit 2
      │ ok
 validator.Run ──err──▶ (--json? WriteErrorJSON : text) ; exit 2

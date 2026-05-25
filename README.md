@@ -51,7 +51,7 @@ os.Exit(rep.ExitCode())
 visualization. It contains `meta` (run inputs — never the apiKey), `summary`
 (verdict + status counts), and `groups` (a `server` group plus one per data
 source, each with its results). On failure before a report is produced, a
-`{ "schemaVersion", "error" }` object is emitted to stdout and the process exits 2.
+an object like `{ "schemaVersion": "1.0", "error": "..." }` is emitted to stdout and the process exits 2.
 
 The full contract is published as a JSON Schema (draft 2020-12) at
 [`schema/oba-validator-report.schema.json`](schema/oba-validator-report.schema.json).
