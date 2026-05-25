@@ -6,11 +6,30 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/onebusaway/oba-validator/config"
 	"github.com/onebusaway/oba-validator/report"
 	"github.com/onebusaway/oba-validator/validator"
 )
+
+// apiKeyInJSON matches an "apiKey" string field in a (possibly malformed) JSON
+// argument so its value can be scrubbed from error output.
+var apiKeyInJSON = regexp.MustCompile(`"apiKey"\s*:\s*"((?:\\.|[^"\\])*)"`)
+
+// redactionKey returns the apiKey to scrub from a config-load error. config.Load
+// can fail before it parses the key — notably when a raw-JSON argument that does
+// not start with '{' is misread as a file path, whose os.ReadFile error echoes
+// the raw input (and thus an inline apiKey) verbatim. The parsed cfg is empty in
+// that case, so prefer a key sniffed straight from the argument, falling back to
+// the environment.
+func redactionKey(arg string) string {
+	if m := apiKeyInJSON.FindStringSubmatch(arg); m != nil && m[1] != "" {
+		return m[1]
+	}
+	return os.Getenv("ONEBUSAWAY_API_KEY")
+}
 
 type overrides struct {
 	jsonOut    bool
@@ -68,12 +87,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	cfg, err := config.Load(fs.Arg(0))
 	if err != nil {
+		key := redactionKey(fs.Arg(0))
 		if o.jsonOut {
-			if werr := report.WriteErrorJSON(stdout, err.Error(), os.Getenv("ONEBUSAWAY_API_KEY")); werr != nil {
+			if werr := report.WriteErrorJSON(stdout, err.Error(), key); werr != nil {
 				fmt.Fprintln(stderr, "output error:", werr)
 			}
 		} else {
-			fmt.Fprintln(stderr, "config error:", err)
+			msg := err.Error()
+			if key != "" {
+				msg = strings.ReplaceAll(msg, key, "***")
+			}
+			fmt.Fprintln(stderr, "config error:", msg)
 		}
 		return 2
 	}

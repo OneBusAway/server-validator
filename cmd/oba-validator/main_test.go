@@ -91,3 +91,33 @@ func TestRunJSONOutputShape(t *testing.T) {
 		}
 	}
 }
+
+func TestRunJSONConfigErrorRedactsInlineAPIKey(t *testing.T) {
+	t.Setenv("ONEBUSAWAY_API_KEY", "")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"oba-validator", "--json", `[{"obaServerURL":"https://x","apiKey":"SUPER-SECRET-KEY"}]`}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit=%d want 2", code)
+	}
+	if strings.Contains(stdout.String(), "SUPER-SECRET-KEY") {
+		t.Errorf("apiKey leaked to stdout:\n%s", stdout.String())
+	}
+	var ed struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &ed); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	if ed.Error == "" {
+		t.Errorf("expected an error message: %s", stdout.String())
+	}
+}
+
+func TestRunTextConfigErrorRedactsInlineAPIKey(t *testing.T) {
+	t.Setenv("ONEBUSAWAY_API_KEY", "")
+	var stdout, stderr bytes.Buffer
+	run([]string{"oba-validator", `[{"obaServerURL":"https://x","apiKey":"SUPER-SECRET-KEY"}]`}, &stdout, &stderr)
+	if strings.Contains(stderr.String(), "SUPER-SECRET-KEY") {
+		t.Errorf("apiKey leaked to stderr:\n%s", stderr.String())
+	}
+}
