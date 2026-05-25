@@ -1,1 +1,5 @@
 /bin/
+
+# Example configs may contain real server URLs/keys; keep only the KCM sample.
+/example_configs/*
+!/example_configs/kcm.json

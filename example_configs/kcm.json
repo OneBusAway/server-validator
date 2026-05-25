@@ -1,0 +1,13 @@
+{
+    "obaServerURL": "https://api.pugetsound.onebusaway.org",
+    "apiKey": "org.onebusaway.iphone",
+    "dataSources": [
+        {
+            "agencyMapping": { "KCM": "1" },
+            "staticGtfsFeedURL": "https://metro.kingcounty.gov/GTFS/google_transit.zip",
+            "vehiclePositionsURL": "https://s3.amazonaws.com/kcm-alerts-realtime-prod/vehiclepositions.pb",
+            "tripUpdatesURL": "https://s3.amazonaws.com/kcm-alerts-realtime-prod/tripupdates.pb",
+            "serviceAlertsURL": "https://s3.amazonaws.com/kcm-alerts-realtime-prod/alerts.pb"
+        }
+    ]
+}
