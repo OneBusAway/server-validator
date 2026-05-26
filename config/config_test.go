@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +73,76 @@ func TestLoadValidationErrors(t *testing.T) {
 	}
 	if _, err := Load(`{"obaServerURL":"https://x","apiKey":"k"}`); err == nil {
 		t.Error("expected missing-dataSources error")
+	}
+}
+
+func TestLoadParsesSinkFields(t *testing.T) {
+	raw := `{
+	  "obaServerURL": "https://x",
+	  "apiKey": "k",
+	  "dataSources": [{"staticGtfsFeedURL":"u"}],
+	  "db_url": "jdbc:postgresql://h:5432/d",
+	  "db_user": "u",
+	  "db_pass": "p",
+	  "correlation_id": "abc-123",
+	  "result_table": "oba_validator_results"
+	}`
+	cfg, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := cfg.SinkConfig()
+	if sc.DBURL != "jdbc:postgresql://h:5432/d" || sc.DBUser != "u" || sc.DBPass != "p" {
+		t.Errorf("sink fields not parsed: %+v", sc)
+	}
+	if sc.CorrelationID != "abc-123" || sc.ResultTable != "oba_validator_results" {
+		t.Errorf("correlation/table not parsed: %+v", sc)
+	}
+	if !sc.Configured() {
+		t.Errorf("SinkConfig should be Configured()")
+	}
+}
+
+func TestLoadWithoutSinkFieldsLeavesItDisabled(t *testing.T) {
+	cfg, err := Load(sampleJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SinkConfig().Configured() {
+		t.Errorf("SinkConfig should be disabled when fields are absent")
+	}
+}
+
+func TestLoadRejectsPartialSinkConfig(t *testing.T) {
+	raw := `{
+	  "obaServerURL": "https://x",
+	  "apiKey": "k",
+	  "dataSources": [{"staticGtfsFeedURL":"u"}],
+	  "db_url": "jdbc:postgresql://h/d",
+	  "db_user": "u"
+	}`
+	_, err := Load(raw)
+	if err == nil {
+		t.Fatal("want partial-sink error, got nil")
+	}
+	if !strings.Contains(err.Error(), "db_pass") {
+		t.Errorf("error %q should mention the first missing field (db_pass)", err)
+	}
+}
+
+func TestLoadRejectsUnknownResultTable(t *testing.T) {
+	raw := `{
+	  "obaServerURL": "https://x",
+	  "apiKey": "k",
+	  "dataSources": [{"staticGtfsFeedURL":"u"}],
+	  "db_url": "jdbc:postgresql://h/d",
+	  "db_user": "u",
+	  "db_pass": "p",
+	  "correlation_id": "abc",
+	  "result_table": "evil"
+	}`
+	_, err := Load(raw)
+	if err == nil || !strings.Contains(err.Error(), "unsupported result_table") {
+		t.Errorf("want allow-list error, got %v", err)
 	}
 }

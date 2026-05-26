@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/onebusaway/oba-validator/sink"
 )
 
 // DataSource is one operator's set of feeds plus its agency remap.
@@ -28,8 +30,19 @@ type Config struct {
 	MaxConcurrency     int          `json:"maxConcurrency"`
 	TimeoutSeconds     int          `json:"timeoutSeconds"`
 	CacheDir           string       `json:"cacheDir"`
-	NoCache            bool         `json:"-"`
-	Refresh            bool         `json:"-"`
+
+	// Result sink — optional. Activated when DBURL is non-blank; all five must
+	// then be present together (see sink.Config.Validate). These are invocation
+	// inputs from obacloud's ServerValidationJob, not user-facing config; do
+	// not surface them in --help or error messages.
+	DBURL         string `json:"db_url,omitempty"`
+	DBUser        string `json:"db_user,omitempty"`
+	DBPass        string `json:"db_pass,omitempty"`
+	CorrelationID string `json:"correlation_id,omitempty"`
+	ResultTable   string `json:"result_table,omitempty"`
+
+	NoCache bool `json:"-"`
+	Refresh bool `json:"-"`
 }
 
 // Load reads config from a file path or a raw JSON string (auto-detected by a
@@ -77,6 +90,19 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// SinkConfig assembles the optional result-sink configuration from the five
+// flat invocation-input fields. The returned Config is value-copied, so
+// downstream Write callers can hold it without aliasing config state.
+func (c Config) SinkConfig() sink.Config {
+	return sink.Config{
+		DBURL:         c.DBURL,
+		DBUser:        c.DBUser,
+		DBPass:        c.DBPass,
+		CorrelationID: c.CorrelationID,
+		ResultTable:   c.ResultTable,
+	}
+}
+
 func (c Config) validate() error {
 	if c.OBAServerURL == "" {
 		return fmt.Errorf("obaServerURL is required")
@@ -86,6 +112,9 @@ func (c Config) validate() error {
 	}
 	if len(c.DataSources) == 0 {
 		return fmt.Errorf("at least one dataSource is required")
+	}
+	if err := c.SinkConfig().Validate(); err != nil {
+		return err
 	}
 	return nil
 }
