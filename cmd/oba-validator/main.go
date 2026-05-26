@@ -11,6 +11,7 @@ import (
 
 	"github.com/onebusaway/oba-validator/config"
 	"github.com/onebusaway/oba-validator/report"
+	"github.com/onebusaway/oba-validator/sink"
 	"github.com/onebusaway/oba-validator/validator"
 )
 
@@ -18,18 +19,46 @@ import (
 // argument so its value can be scrubbed from error output.
 var apiKeyInJSON = regexp.MustCompile(`"apiKey"\s*:\s*"((?:\\.|[^"\\])*)"`)
 
-// redactionKey returns the apiKey to scrub from a config-load error. config.Load
-// can fail before it parses the key and echo the raw argument (and thus an inline
-// apiKey) into its error — either when a raw-JSON argument that does not start
-// with '{' is misread as a file path (the os.ReadFile error wraps the input), or
-// when a malformed object fails to parse. config.Load returns an empty Config in
-// both cases, so prefer a key sniffed straight from the argument, falling back to
-// the environment.
-func redactionKey(arg string) string {
+// dbPassInJSON matches a "db_pass" field in a (possibly malformed) JSON argument
+// so its value can be scrubbed when config.Load echoes the raw input back to
+// the user (see redactionKey's rationale for apiKey).
+var dbPassInJSON = regexp.MustCompile(`"db_pass"\s*:\s*"((?:\\.|[^"\\])*)"`)
+
+// redactionSecrets returns every secret value that must be removed from an
+// error string. Inline credentials sniffed straight from the raw argument win
+// over environment fallbacks because config.Load can fail before parsing the
+// JSON (an os.ReadFile error wraps the input as a file path) and echo the raw
+// blob — including any apiKey or db_pass inside it.
+func redactionSecrets(arg string) []string {
+	var out []string
 	if m := apiKeyInJSON.FindStringSubmatch(arg); m != nil && m[1] != "" {
-		return m[1]
+		out = append(out, m[1])
+	} else if env := os.Getenv("ONEBUSAWAY_API_KEY"); env != "" {
+		out = append(out, env)
 	}
-	return os.Getenv("ONEBUSAWAY_API_KEY")
+	if m := dbPassInJSON.FindStringSubmatch(arg); m != nil && m[1] != "" {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// scrub replaces every non-empty secret in s with "***". Empty secrets are
+// no-ops so callers don't need to filter before calling.
+func scrub(s string, secrets []string) string {
+	for _, sec := range secrets {
+		if sec != "" {
+			s = strings.ReplaceAll(s, sec, "***")
+		}
+	}
+	return s
+}
+
+// sinkWrite is the function used to write the run's result row to the optional
+// Postgres sink. It is a package-level var so tests can replace it with a
+// recorder, avoiding a real DB dependency in unit tests. Production callers
+// use the default (sink.Config.Write).
+var sinkWrite = func(ctx context.Context, c sink.Config, status, data, errMsg string) error {
+	return c.Write(ctx, status, data, errMsg)
 }
 
 type overrides struct {
@@ -88,47 +117,78 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	cfg, err := config.Load(fs.Arg(0))
 	if err != nil {
-		key := redactionKey(fs.Arg(0))
+		secrets := redactionSecrets(fs.Arg(0))
+		msg := scrub(err.Error(), secrets)
 		if o.jsonOut {
-			if werr := report.WriteErrorJSON(stdout, err.Error(), key); werr != nil {
+			// WriteErrorJSON does an extra apiKey scrub of its own; passing
+			// the already-scrubbed msg through is idempotent.
+			if werr := report.WriteErrorJSON(stdout, msg, ""); werr != nil {
 				fmt.Fprintln(stderr, "output error:", werr)
 			}
 		} else {
-			msg := err.Error()
-			if key != "" {
-				msg = strings.ReplaceAll(msg, key, "***")
-			}
 			fmt.Fprintln(stderr, "config error:", msg)
 		}
+		// No sink write here: the sink config could not be parsed, so there's
+		// no correlation_id to key the row by. The caller's polling timeout
+		// is the safety net (see spec §Deployment).
 		return 2
 	}
 	applyOverrides(&cfg, o)
 
-	rep, err := validator.Run(context.Background(), cfg)
+	ctx := context.Background()
+	rep, err := validator.Run(ctx, cfg)
 	if err != nil {
+		errMsg := scrub(err.Error(), []string{cfg.APIKey, cfg.DBPass})
 		if o.jsonOut {
-			if werr := report.WriteErrorJSON(stdout, err.Error(), cfg.APIKey); werr != nil {
+			if werr := report.WriteErrorJSON(stdout, errMsg, ""); werr != nil {
 				fmt.Fprintln(stderr, "output error:", werr)
 			}
 		} else {
-			msg := err.Error()
-			if cfg.APIKey != "" {
-				msg = strings.ReplaceAll(msg, cfg.APIKey, "***")
+			fmt.Fprintln(stderr, "run error:", errMsg)
+		}
+		// Validator-error path: we DO have a parsed sink config (config.Load
+		// succeeded). Write status="error" so the caller learns the run failed
+		// rather than timing out.
+		if sc := cfg.SinkConfig(); sc.Configured() {
+			if werr := sinkWrite(ctx, sc, "error", "", errMsg); werr != nil {
+				fmt.Fprintln(stderr, "result sink write failed:", werr)
 			}
-			fmt.Fprintln(stderr, "run error:", msg)
 		}
 		return 2
 	}
 
-	var werr error
+	// Success path: render once, write twice (stdout + optional sink).
+	var reportBytes []byte
 	if o.jsonOut {
-		werr = report.WriteJSON(stdout, rep, cfg)
+		reportBytes, err = report.RenderJSON(rep, cfg)
+		if err != nil {
+			fmt.Fprintln(stderr, "output error:", err)
+			return 2
+		}
+		if _, werr := stdout.Write(reportBytes); werr != nil {
+			fmt.Fprintln(stderr, "output error:", werr)
+			return 2
+		}
 	} else {
-		werr = report.WriteText(stdout, rep)
+		if werr := report.WriteText(stdout, rep); werr != nil {
+			fmt.Fprintln(stderr, "output error:", werr)
+			return 2
+		}
+		// Text path still needs JSON bytes for the sink (the contract is
+		// fixed: result_data is the JSON report). Render after stdout so a
+		// rendering failure here can't suppress the text output the user sees.
+		if sc := cfg.SinkConfig(); sc.Configured() {
+			reportBytes, err = report.RenderJSON(rep, cfg)
+			if err != nil {
+				fmt.Fprintln(stderr, "result sink: render JSON failed:", err)
+			}
+		}
 	}
-	if werr != nil {
-		fmt.Fprintln(stderr, "output error:", werr)
-		return 2
+
+	if sc := cfg.SinkConfig(); sc.Configured() && reportBytes != nil {
+		if werr := sinkWrite(ctx, sc, "completed", string(reportBytes), ""); werr != nil {
+			fmt.Fprintln(stderr, "result sink write failed:", werr)
+		}
 	}
 	return rep.ExitCode()
 }
