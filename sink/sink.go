@@ -5,10 +5,12 @@
 // as today.
 //
 // The status column vocabulary is deliberately narrow:
-//   "completed" — the validator produced a report (PASS or FAIL verdict);
-//                 result_data holds the report JSON.
-//   "error"     — the validator could not produce a report (errorDocument variant);
-//                 error_message carries the cause.
+//
+//	"completed" — the validator produced a report (PASS or FAIL verdict);
+//	              result_data holds the report JSON.
+//	"error"     — the validator could not produce a report (errorDocument variant);
+//	              error_message carries the cause.
+//
 // The verdict lives inside result_data at summary.verdict, NOT in status.
 package sink
 
