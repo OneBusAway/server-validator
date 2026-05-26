@@ -53,6 +53,12 @@ func scrub(s string, secrets []string) string {
 	return s
 }
 
+// renderJSON is the function used to render the report to JSON bytes. It is a
+// package-level var so tests can replace it with a stub that returns an error,
+// exercising the sink "error" fallback when rendering itself fails. Production
+// callers use the default (report.RenderJSON).
+var renderJSON = report.RenderJSON
+
 // sinkWrite is the function used to write the run's result row to the optional
 // Postgres sink. It is a package-level var so tests can replace it with a
 // recorder, avoiding a real DB dependency in unit tests. Production callers
@@ -160,9 +166,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// Success path: render once, write twice (stdout + optional sink).
 	var reportBytes []byte
 	if o.jsonOut {
-		reportBytes, err = report.RenderJSON(rep, cfg)
-		if err != nil {
-			fmt.Fprintln(stderr, "output error:", err)
+		var renderErr error
+		reportBytes, renderErr = renderJSON(rep, cfg)
+		if renderErr != nil {
+			fmt.Fprintln(stderr, "output error:", renderErr)
+			// Render failed before stdout: fall back to a sink "error" row so the
+			// caller doesn't poll until its 15-minute timeout. Stdout consumers
+			// get nothing on this path, but Render logs will carry the stderr line.
+			if sc := cfg.SinkConfig(); sc.Configured() {
+				if werr := sinkWrite(ctx, sc, "error", "", "internal: render JSON failed: "+renderErr.Error()); werr != nil {
+					fmt.Fprintln(stderr, "result sink write failed:", werr)
+				}
+			}
 			return 2
 		}
 		if _, werr := stdout.Write(reportBytes); werr != nil {
@@ -176,11 +191,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		// Text path still needs JSON bytes for the sink (the contract is
 		// fixed: result_data is the JSON report). Render after stdout so a
-		// rendering failure here can't suppress the text output the user sees.
+		// rendering failure here can't suppress the text output the user already
+		// saw — but if it does fail, write a sink "error" row so the caller
+		// doesn't poll until its 15-minute timeout.
 		if sc := cfg.SinkConfig(); sc.Configured() {
-			reportBytes, err = report.RenderJSON(rep, cfg)
-			if err != nil {
-				fmt.Fprintln(stderr, "result sink: render JSON failed:", err)
+			var renderErr error
+			reportBytes, renderErr = renderJSON(rep, cfg)
+			if renderErr != nil {
+				fmt.Fprintln(stderr, "result sink: render JSON failed:", renderErr)
+				if werr := sinkWrite(ctx, sc, "error", "", "internal: render JSON failed: "+renderErr.Error()); werr != nil {
+					fmt.Fprintln(stderr, "result sink write failed:", werr)
+				}
+				return rep.ExitCode()
 			}
 		}
 	}

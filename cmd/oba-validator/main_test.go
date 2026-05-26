@@ -12,6 +12,7 @@ import (
 
 	"github.com/onebusaway/oba-validator/config"
 	"github.com/onebusaway/oba-validator/sink"
+	"github.com/onebusaway/oba-validator/validator"
 )
 
 func TestApplyFlagOverrides(t *testing.T) {
@@ -265,5 +266,59 @@ func TestRunSinkErrorDoesNotAlterExitCode(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "result sink write failed") {
 		t.Errorf("stderr should log the sink failure: %s", stderr.String())
+	}
+}
+
+func TestRunRenderJSONFailureWritesSinkErrorRow(t *testing.T) {
+	t.Setenv("ONEBUSAWAY_API_KEY", "")
+
+	obaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "current-time"):
+			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
+		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
+			w.Write([]byte(`{"data":{"list":[],"references":{"agencies":[]}}}`))
+		default:
+			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
+		}
+	}))
+	defer obaSrv.Close()
+	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte{}) }))
+	defer feedSrv.Close()
+
+	prevRender := renderJSON
+	renderJSON = func(rep validator.Report, cfg config.Config) ([]byte, error) {
+		return nil, fmt.Errorf("simulated render failure")
+	}
+	defer func() { renderJSON = prevRender }()
+
+	var gotStatus, gotErrMsg string
+	prevSink := sinkWrite
+	sinkWrite = func(ctx context.Context, c sink.Config, status, data, errMsg string) error {
+		gotStatus = status
+		gotErrMsg = errMsg
+		return nil
+	}
+	defer func() { sinkWrite = prevSink }()
+
+	cfg := `{
+	  "obaServerURL":"` + obaSrv.URL + `",
+	  "apiKey":"k",
+	  "dataSources":[{"staticGtfsFeedURL":"` + feedSrv.URL + `/gtfs.zip"}],
+	  "db_url":"jdbc:postgresql://h/d",
+	  "db_user":"u",
+	  "db_pass":"p",
+	  "correlation_id":"abc",
+	  "result_table":"oba_validator_results"
+	}`
+	var stdout, stderr bytes.Buffer
+	run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
+
+	if gotStatus != "error" {
+		t.Errorf("want status=error on render failure, got %q", gotStatus)
+	}
+	if !strings.Contains(gotErrMsg, "render JSON failed") {
+		t.Errorf("error_message should mention render failure, got %q", gotErrMsg)
 	}
 }
