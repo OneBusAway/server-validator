@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Go CLI + library that validates a running OneBusAway (OBA) server by cross-referencing its REST API against the *authoritative* sources of truth: the operator's static GTFS feed and GTFS-realtime feeds (vehicle positions, trip updates, service alerts). It answers "is this OBA server telling the truth about what the feeds say?"
+A Go CLI + library that validates a running OneBusAway (OBA) server by cross-referencing its REST API against the *authoritative* sources of truth: the operator's static GTFS feed and GTFS-realtime feeds (vehicle positions, trip updates, service alerts). It answers "is this OBA server telling the truth about what the feeds say?" An optional Postgres result sink (`sink/`) writes one row per run keyed by `correlation_id` when the invocation payload includes `db_url` and its siblings — see `docs/superpowers/specs/2026-05-25-result-sink-design.md`.
 
 ## Commands
 
@@ -33,6 +33,7 @@ The flow is **config → prepare (fetch) → checks → report**:
 2. **`feeds`** — fetching + parsing. `Fetcher` downloads feeds; static GTFS goes through an on-disk **conditional-GET `Cache`** (ETag/Last-Modified, atomic body-then-meta writes), realtime feeds are always fetched fresh. `ParsedStatic` wraps go-gtfs's `Static` with the lookup indexes checks need (agency IDs/names, raw trip→agency, raw route→agency).
 3. **`validator`** — the engine. `validator.Run()` calls `prepare()`, then runs every check.
 4. **`report`** — renders a `Report` as grouped text (`WriteText`) or, via `WriteJSON`, a UI-oriented JSON `Document` (meta + summary + grouped results; schema at `schema/oba-validator-report.schema.json`). `WriteErrorJSON` emits the error variant. The `Document` view model is built by the pure `BuildDocument(report, config, now)` so output is deterministic in tests.
+5. **`sink`** — optional Postgres writer. When the invocation payload includes `db_url`/`db_user`/`db_pass`/`correlation_id`/`result_table`, `main.go` calls `sink.Write` after stdout is written. `status` is `"completed"` for both PASS and FAIL verdicts (the verdict lives inside `result_data` at `summary.verdict`); `"error"` is reserved for the `errorDocument` variant. A sink write failure is logged to stderr and never changes the validator's exit code.
 
 `prepare()` (`validator/validator.go`) builds the shared `ValidationContext`: it constructs the OBA SDK client, fetches `AgenciesWithCoverage` once, and **fans out concurrently** (bounded by `MaxConcurrency`, default 4) to download/parse each data source's feeds into a `SourceContext`. A per-feed fetch/parse failure is recorded in `SourceContext.PrepErrors[feedName]` rather than aborting the run — checks inspect that map and decide severity themselves.
 

@@ -11,27 +11,50 @@ import (
 	"github.com/onebusaway/oba-validator/validator"
 )
 
+// RenderJSON returns the indented JSON bytes for a successful run. Callers
+// that need to send the same payload to multiple sinks (stdout, DB, log)
+// should call RenderJSON once and write the returned slice repeatedly, rather
+// than calling WriteJSON twice and risking inconsistent encodings.
+func RenderJSON(rep validator.Report, cfg config.Config) ([]byte, error) {
+	return marshalIndented(BuildDocument(rep, cfg, time.Now().UTC()))
+}
+
+// RenderErrorJSON returns the indented JSON bytes for the errorDocument
+// variant, with apiKey redacted from msg.
+func RenderErrorJSON(msg, apiKey string) ([]byte, error) {
+	return marshalIndented(ErrorDocument{SchemaVersion: SchemaVersion, Error: redactString(msg, apiKey)})
+}
+
 // WriteJSON writes the report as an indented, UI-oriented JSON Document. The
 // document is marshalled fully before writing so a mid-stream write failure
 // can't leave partial, unparseable JSON on the consumer's stream.
 func WriteJSON(w io.Writer, rep validator.Report, cfg config.Config) error {
-	return writeIndentedJSON(w, BuildDocument(rep, cfg, time.Now().UTC()))
+	b, err := RenderJSON(rep, cfg)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(b)
+	return err
 }
 
 // WriteErrorJSON writes an indented ErrorDocument to w, redacting apiKey from msg.
 func WriteErrorJSON(w io.Writer, msg, apiKey string) error {
-	return writeIndentedJSON(w, ErrorDocument{SchemaVersion: SchemaVersion, Error: redactString(msg, apiKey)})
-}
-
-// writeIndentedJSON marshals v fully, then writes it in a single call so output
-// is all-or-nothing rather than incrementally streamed.
-func writeIndentedJSON(w io.Writer, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
+	b, err := RenderErrorJSON(msg, apiKey)
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(append(b, '\n'))
+	_, err = w.Write(b)
 	return err
+}
+
+// marshalIndented returns the JSON encoding of v as an indented byte slice
+// terminated by a trailing newline so the caller can write it directly.
+func marshalIndented(v any) ([]byte, error) {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 // WriteText writes a human-readable, grouped report with a summary line.
