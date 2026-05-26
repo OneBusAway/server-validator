@@ -53,6 +53,12 @@ func scrub(s string, secrets []string) string {
 	return s
 }
 
+// sinkWriteFailedMsg is the stderr prefix used whenever a result-sink write
+// returns an error. Centralized so all four call sites (validator-error path,
+// JSON-render-failure fallback in both o.jsonOut branches, and the unified
+// success-path write) stay in sync.
+const sinkWriteFailedMsg = "result sink write failed:"
+
 // renderJSON is the function used to render the report to JSON bytes. It is a
 // package-level var so tests can replace it with a stub that returns an error,
 // exercising the sink "error" fallback when rendering itself fails. Production
@@ -157,7 +163,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// rather than timing out.
 		if sc := cfg.SinkConfig(); sc.Configured() {
 			if werr := sinkWrite(ctx, sc, "error", "", errMsg); werr != nil {
-				fmt.Fprintln(stderr, "result sink write failed:", werr)
+				fmt.Fprintln(stderr, sinkWriteFailedMsg, werr)
 			}
 		}
 		return 2
@@ -175,7 +181,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			// get nothing on this path, but Render logs will carry the stderr line.
 			if sc := cfg.SinkConfig(); sc.Configured() {
 				if werr := sinkWrite(ctx, sc, "error", "", "internal: render JSON failed: "+renderErr.Error()); werr != nil {
-					fmt.Fprintln(stderr, "result sink write failed:", werr)
+					fmt.Fprintln(stderr, sinkWriteFailedMsg, werr)
 				}
 			}
 			return 2
@@ -200,7 +206,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if renderErr != nil {
 				fmt.Fprintln(stderr, "result sink: render JSON failed:", renderErr)
 				if werr := sinkWrite(ctx, sc, "error", "", "internal: render JSON failed: "+renderErr.Error()); werr != nil {
-					fmt.Fprintln(stderr, "result sink write failed:", werr)
+					fmt.Fprintln(stderr, sinkWriteFailedMsg, werr)
 				}
 				return rep.ExitCode()
 			}
@@ -209,7 +215,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if sc := cfg.SinkConfig(); sc.Configured() && reportBytes != nil {
 		if werr := sinkWrite(ctx, sc, "completed", string(reportBytes), ""); werr != nil {
-			fmt.Fprintln(stderr, "result sink write failed:", werr)
+			fmt.Fprintln(stderr, sinkWriteFailedMsg, werr)
 		}
 	}
 	return rep.ExitCode()

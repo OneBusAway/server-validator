@@ -15,6 +15,55 @@ import (
 	"github.com/onebusaway/oba-validator/validator"
 )
 
+// newStubOBA returns an httptest.Server that mimics the subset of OBA REST
+// endpoints the validator hits during a basic run: current-time,
+// agencies-with-coverage, and a default empty list for everything else.
+// Cleanup is registered via t.Cleanup so callers don't defer Close themselves.
+func newStubOBA(t *testing.T) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "current-time"):
+			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
+		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
+			w.Write([]byte(`{"data":{"list":[],"references":{"agencies":[]}}}`))
+		default:
+			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
+		}
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// newStubFeed returns an httptest.Server that always responds with an empty
+// payload — enough for the validator's prepare step to record a prep error
+// without aborting the run. Cleanup is registered via t.Cleanup.
+func newStubFeed(t *testing.T) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte{})
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// sinkCfgJSON returns a raw JSON config that includes a fully populated result
+// sink with the given correlation_id, suitable for tests that exercise the
+// sink-active code paths.
+func sinkCfgJSON(obaURL, feedURL, correlationID string) string {
+	return `{
+	  "obaServerURL":"` + obaURL + `",
+	  "apiKey":"k",
+	  "dataSources":[{"staticGtfsFeedURL":"` + feedURL + `/gtfs.zip"}],
+	  "db_url":"jdbc:postgresql://h/d",
+	  "db_user":"u",
+	  "db_pass":"p",
+	  "correlation_id":"` + correlationID + `",
+	  "result_table":"oba_validator_results"
+	}`
+}
+
 func TestApplyFlagOverrides(t *testing.T) {
 	cfg := config.Config{SampleSize: 3, NoCache: false}
 	applyOverrides(&cfg, overrides{sampleSize: 5, noCache: true, freshness: 60})
@@ -64,23 +113,8 @@ func TestRunJSONConfigErrorEmitsErrorJSON(t *testing.T) {
 }
 
 func TestRunJSONOutputShape(t *testing.T) {
-	obaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "current-time"):
-			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
-		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
-			w.Write([]byte(`{"data":{"list":[],"references":{"agencies":[]}}}`))
-		default:
-			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
-		}
-	}))
-	defer obaSrv.Close()
-	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte{}) // empty payload -> prep error recorded, run still completes
-	}))
-	defer feedSrv.Close()
-
+	obaSrv := newStubOBA(t)
+	feedSrv := newStubFeed(t)
 	cfg := `{"obaServerURL":"` + obaSrv.URL + `","apiKey":"test","dataSources":[{"staticGtfsFeedURL":"` + feedSrv.URL + `/gtfs.zip"}]}`
 	var stdout, stderr bytes.Buffer
 	run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
@@ -128,23 +162,8 @@ func TestRunTextConfigErrorRedactsInlineAPIKey(t *testing.T) {
 
 func TestRunInvokesSinkOnCompleted(t *testing.T) {
 	t.Setenv("ONEBUSAWAY_API_KEY", "")
-
-	obaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "current-time"):
-			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
-		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
-			w.Write([]byte(`{"data":{"list":[],"references":{"agencies":[]}}}`))
-		default:
-			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
-		}
-	}))
-	defer obaSrv.Close()
-	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte{})
-	}))
-	defer feedSrv.Close()
+	obaSrv := newStubOBA(t)
+	feedSrv := newStubFeed(t)
 
 	type captured struct {
 		status, data, errMsg string
@@ -158,16 +177,7 @@ func TestRunInvokesSinkOnCompleted(t *testing.T) {
 	}
 	defer func() { sinkWrite = prev }()
 
-	cfg := `{
-	  "obaServerURL":"` + obaSrv.URL + `",
-	  "apiKey":"k",
-	  "dataSources":[{"staticGtfsFeedURL":"` + feedSrv.URL + `/gtfs.zip"}],
-	  "db_url":"jdbc:postgresql://h/d",
-	  "db_user":"u",
-	  "db_pass":"p",
-	  "correlation_id":"abc-123",
-	  "result_table":"oba_validator_results"
-	}`
+	cfg := sinkCfgJSON(obaSrv.URL, feedSrv.URL, "abc-123")
 	var stdout, stderr bytes.Buffer
 	run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
 
@@ -199,21 +209,8 @@ func TestRunSkipsSinkWhenNotConfigured(t *testing.T) {
 	}
 	defer func() { sinkWrite = prev }()
 
-	obaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "current-time"):
-			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
-		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
-			w.Write([]byte(`{"data":{"list":[],"references":{"agencies":[]}}}`))
-		default:
-			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
-		}
-	}))
-	defer obaSrv.Close()
-	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte{}) }))
-	defer feedSrv.Close()
-
+	obaSrv := newStubOBA(t)
+	feedSrv := newStubFeed(t)
 	cfg := `{"obaServerURL":"` + obaSrv.URL + `","apiKey":"k","dataSources":[{"staticGtfsFeedURL":"` + feedSrv.URL + `/gtfs.zip"}]}`
 	var stdout, stderr bytes.Buffer
 	run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
@@ -225,21 +222,8 @@ func TestRunSkipsSinkWhenNotConfigured(t *testing.T) {
 
 func TestRunSinkErrorDoesNotAlterExitCode(t *testing.T) {
 	t.Setenv("ONEBUSAWAY_API_KEY", "")
-
-	obaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "current-time"):
-			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
-		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
-			w.Write([]byte(`{"data":{"list":[],"references":{"agencies":[]}}}`))
-		default:
-			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
-		}
-	}))
-	defer obaSrv.Close()
-	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte{}) }))
-	defer feedSrv.Close()
+	obaSrv := newStubOBA(t)
+	feedSrv := newStubFeed(t)
 
 	prev := sinkWrite
 	sinkWrite = func(ctx context.Context, c sink.Config, status, data, errMsg string) error {
@@ -247,16 +231,7 @@ func TestRunSinkErrorDoesNotAlterExitCode(t *testing.T) {
 	}
 	defer func() { sinkWrite = prev }()
 
-	cfg := `{
-	  "obaServerURL":"` + obaSrv.URL + `",
-	  "apiKey":"k",
-	  "dataSources":[{"staticGtfsFeedURL":"` + feedSrv.URL + `/gtfs.zip"}],
-	  "db_url":"jdbc:postgresql://h/d",
-	  "db_user":"u",
-	  "db_pass":"p",
-	  "correlation_id":"abc",
-	  "result_table":"oba_validator_results"
-	}`
+	cfg := sinkCfgJSON(obaSrv.URL, feedSrv.URL, "abc")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
 
@@ -271,21 +246,8 @@ func TestRunSinkErrorDoesNotAlterExitCode(t *testing.T) {
 
 func TestRunRenderJSONFailureWritesSinkErrorRow(t *testing.T) {
 	t.Setenv("ONEBUSAWAY_API_KEY", "")
-
-	obaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "current-time"):
-			w.Write([]byte(`{"data":{"entry":{"time":1716000000000}}}`))
-		case strings.Contains(r.URL.Path, "agencies-with-coverage"):
-			w.Write([]byte(`{"data":{"list":[],"references":{"agencies":[]}}}`))
-		default:
-			w.Write([]byte(`{"data":{"list":[],"entry":{"arrivalsAndDepartures":[]}}}`))
-		}
-	}))
-	defer obaSrv.Close()
-	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte{}) }))
-	defer feedSrv.Close()
+	obaSrv := newStubOBA(t)
+	feedSrv := newStubFeed(t)
 
 	prevRender := renderJSON
 	renderJSON = func(rep validator.Report, cfg config.Config) ([]byte, error) {
@@ -302,16 +264,7 @@ func TestRunRenderJSONFailureWritesSinkErrorRow(t *testing.T) {
 	}
 	defer func() { sinkWrite = prevSink }()
 
-	cfg := `{
-	  "obaServerURL":"` + obaSrv.URL + `",
-	  "apiKey":"k",
-	  "dataSources":[{"staticGtfsFeedURL":"` + feedSrv.URL + `/gtfs.zip"}],
-	  "db_url":"jdbc:postgresql://h/d",
-	  "db_user":"u",
-	  "db_pass":"p",
-	  "correlation_id":"abc",
-	  "result_table":"oba_validator_results"
-	}`
+	cfg := sinkCfgJSON(obaSrv.URL, feedSrv.URL, "abc")
 	var stdout, stderr bytes.Buffer
 	run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
 
