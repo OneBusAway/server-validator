@@ -38,7 +38,11 @@ func TestWriteIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin connect: %v", err)
 	}
-	defer admin.Close(ctx)
+	defer func() {
+		if closeErr := admin.Close(ctx); closeErr != nil {
+			t.Errorf("admin close: %v", closeErr)
+		}
+	}()
 
 	if _, err := admin.Exec(ctx, "DROP TABLE IF EXISTS oba_validator_results"); err != nil {
 		t.Fatalf("teardown: %v", err)

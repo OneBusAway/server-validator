@@ -155,6 +155,13 @@ func (c Config) Write(ctx context.Context, status, resultData, errorMessage stri
 	if !c.Configured() {
 		return fmt.Errorf("sink: Write called on unconfigured Config (programming error)")
 	}
+	// The status column vocabulary is fixed by obacloud's reader: only
+	// "completed" (PASS or FAIL verdict) and "error" (errorDocument variant)
+	// are accepted. Reject anything else before opening a DB connection so
+	// arbitrary values can't be persisted by a buggy caller.
+	if status != "completed" && status != "error" {
+		return fmt.Errorf("sink: unsupported status %q (allowed: \"completed\", \"error\")", status)
+	}
 	if err := c.Validate(); err != nil {
 		return err
 	}

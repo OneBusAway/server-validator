@@ -1,6 +1,7 @@
 package sink
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -150,25 +151,56 @@ func TestNormalizeDSN(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := normalizeDSN(tc.raw, tc.user, tc.pass)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("want error, got %q", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			for _, s := range tc.mustContain {
-				if !strings.Contains(got, s) {
-					t.Errorf("DSN %q missing %q", got, s)
-				}
-			}
-			for _, s := range tc.mustNotContain {
-				if strings.Contains(got, s) {
-					t.Errorf("DSN %q should not contain %q", got, s)
-				}
-			}
+			checkDSNResult(t, got, err, tc.wantErr, tc.mustContain, tc.mustNotContain)
 		})
+	}
+}
+
+// checkDSNResult asserts a normalizeDSN result against a case. Extracted from
+// the t.Run body so TestNormalizeDSN's cognitive complexity stays low: nested
+// loops live here rather than three levels deep inside the table-driven loop.
+func checkDSNResult(t *testing.T, got string, err error, wantErr bool, mustContain, mustNotContain []string) {
+	t.Helper()
+	if wantErr {
+		if err == nil {
+			t.Fatalf("want error, got %q", got)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(got, s) {
+			t.Errorf("DSN %q missing %q", got, s)
+		}
+	}
+	for _, s := range mustNotContain {
+		if strings.Contains(got, s) {
+			t.Errorf("DSN %q should not contain %q", got, s)
+		}
+	}
+}
+
+// TestWriteRejectsUnsupportedStatus exercises the status-vocabulary guard
+// without needing a real DB: the guard runs before any pgx call, so it surfaces
+// as a fast error against an otherwise valid Config.
+func TestWriteRejectsUnsupportedStatus(t *testing.T) {
+	cfg := Config{
+		DBURL:         "jdbc:postgresql://h/d",
+		DBUser:        "u",
+		DBPass:        "p",
+		CorrelationID: "abc",
+		ResultTable:   "oba_validator_results",
+	}
+	err := cfg.Write(context.Background(), "failed", "", "")
+	if err == nil {
+		t.Fatalf("want error for unsupported status, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported status") {
+		t.Errorf("error %q should mention unsupported status", err)
+	}
+	if !strings.Contains(err.Error(), `"failed"`) {
+		t.Errorf("error %q should echo the offending value", err)
 	}
 }
