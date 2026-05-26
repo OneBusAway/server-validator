@@ -23,7 +23,7 @@ go run ./cmd/oba-validator [flags] <config.json | raw-json-string>
 OBA_VALIDATOR_LIVE=1 go test ./validator/ -run TestLiveKingCountyMetro -v
 ```
 
-Exit codes (also returned by `Report.ExitCode()`): `0` = no failures, `1` = ≥1 failure, `2` = config/usage error. Warnings and skips never affect the exit code.
+Exit codes: `0` = the validator produced a report (PASS *or* FAIL verdict); `2` = the validator could not run (config/usage error, or `validator.Run` returned an error). The verdict is deliberately *not* in the exit code — it lives in the JSON report's `summary.verdict` and the result-sink row's `result_data`, so a Render cron that surfaces real server bugs still completes as "succeeded" and the caller learns the verdict from the sink. `Report.ExitCode()` (and `summary.exitCode`) is always `0`.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ Each check is a small struct in its own `check_*.go` file, returns `[]Result`, a
 
 This is the core design discipline. Severity is **evidence-based** — see `docs/superpowers/specs/2026-05-24-oba-validator-design.md`:
 
-- **`Fail`** only when the feed *has* an entity but the API contradicts or is missing it (genuine server breakage). Failures set exit code 1.
+- **`Fail`** only when the feed *has* an entity but the API contradicts or is missing it (genuine server breakage). A `Fail` drives the report's `summary.verdict` to `"FAIL"` but does **not** change the process exit code (see exit-code policy above).
 - **`Warn`** for valid-but-empty / unsamplable / unconfirmed conditions: empty feed, vehicle that moved, or an ID that didn't match on shape alone.
 - **`Skip`** when a prerequisite failed earlier in a dependent chain.
 

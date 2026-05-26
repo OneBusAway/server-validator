@@ -42,7 +42,11 @@ type MetaSource struct {
 
 // Summary is the run-wide verdict and tallies.
 type Summary struct {
-	Verdict  string `json:"verdict"` // PASS | FAIL
+	Verdict string `json:"verdict"` // PASS | FAIL
+	// ExitCode mirrors validator.Report.ExitCode() and is always 0 for any
+	// completed run. The PASS/FAIL verdict lives in Verdict above; the process
+	// exit code is reserved for "the validator could not run" (exit 2 on
+	// config error). Retained for schema stability — see CLAUDE.md.
 	ExitCode int    `json:"exitCode"`
 	Total    int    `json:"total"`
 	Counts   Counts `json:"counts"`

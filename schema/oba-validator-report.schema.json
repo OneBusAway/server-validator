@@ -81,7 +81,11 @@
       "required": ["verdict", "exitCode", "total", "counts"],
       "properties": {
         "verdict": { "type": "string", "enum": ["PASS", "FAIL"] },
-        "exitCode": { "type": "integer", "enum": [0, 1] },
+        "exitCode": {
+          "type": "integer",
+          "const": 0,
+          "description": "Always 0 for a completed run. The PASS/FAIL verdict is conveyed by 'verdict' above, not by this field; the process exit code is reserved for 'the validator could not run' (exit 2 on config error). Field is retained for schema stability."
+        },
         "total": { "type": "integer", "minimum": 0 },
         "counts": { "$ref": "#/$defs/counts" }
       }

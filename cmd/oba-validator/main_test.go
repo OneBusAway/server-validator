@@ -130,6 +130,38 @@ func TestRunJSONOutputShape(t *testing.T) {
 	}
 }
 
+// A FAIL verdict must come back through run() as process exit code 0; the
+// PASS/FAIL signal lives in summary.verdict, not the exit code. This pins the
+// CLAUDE.md exit-code policy end-to-end (newStubOBA returns an empty agencies
+// list, which makes the endpoints check emit at least one Fail).
+func TestRunFailVerdictReturnsZero(t *testing.T) {
+	t.Setenv("ONEBUSAWAY_API_KEY", "")
+	obaSrv := newStubOBA(t)
+	feedSrv := newStubFeed(t)
+	cfg := `{"obaServerURL":"` + obaSrv.URL + `","apiKey":"k","dataSources":[{"staticGtfsFeedURL":"` + feedSrv.URL + `/gtfs.zip"}]}`
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("FAIL verdict must produce exit code 0, got %d\nstderr: %s", code, stderr.String())
+	}
+	var doc struct {
+		Summary struct {
+			Verdict  string `json:"verdict"`
+			ExitCode int    `json:"exitCode"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, stdout.String())
+	}
+	if doc.Summary.Verdict != "FAIL" {
+		t.Errorf("summary.verdict = %q, want %q (stub returns empty agencies list)", doc.Summary.Verdict, "FAIL")
+	}
+	if doc.Summary.ExitCode != 0 {
+		t.Errorf("summary.exitCode = %d, want 0", doc.Summary.ExitCode)
+	}
+}
+
 func TestRunJSONConfigErrorRedactsInlineAPIKey(t *testing.T) {
 	t.Setenv("ONEBUSAWAY_API_KEY", "")
 	var stdout, stderr bytes.Buffer
@@ -235,9 +267,10 @@ func TestRunSinkErrorDoesNotAlterExitCode(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"oba-validator", "--json", "--no-cache", cfg}, &stdout, &stderr)
 
-	// Sink failure must not change the validator exit code (0 or 1, never 2).
-	if code == 2 {
-		t.Errorf("sink failure should not produce exit code 2, got %d", code)
+	// Sink failure must not change the validator exit code (always 0 on a
+	// completed run; 2 is reserved for config/usage errors).
+	if code != 0 {
+		t.Errorf("sink failure should not change exit code from 0, got %d", code)
 	}
 	if !strings.Contains(stderr.String(), "result sink write failed") {
 		t.Errorf("stderr should log the sink failure: %s", stderr.String())

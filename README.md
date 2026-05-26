@@ -11,8 +11,10 @@ its REST API against the authoritative static GTFS and GTFS-realtime feeds
 Flags: `--json`, `--sample-size`, `--freshness`, `--timeout`, `--cache-dir`,
 `--no-cache`, `--refresh`.
 
-Exit codes: `0` = no failures, `1` = at least one failure, `2` = config/usage
-error. Warnings and skips do not affect the exit code.
+Exit codes: `0` = the validator produced a report (read `summary.verdict` for
+PASS/FAIL); `2` = the validator could not run (config/usage error). The process
+exit code is intentionally not used to convey a FAIL verdict — that's what the
+JSON report's `summary.verdict` and the result-sink row are for.
 
 ## Config
 
@@ -119,8 +121,10 @@ From Ruby (e.g. an obacloud job), this mirrors the existing pattern:
     start_command = "/app/entrypoint.sh #{encoded}"
 
 Validator flags go after the token (`/app/entrypoint.sh <base64> --json`). The
-job's exit status is the validator's exit code (`0` no failures, `1` ≥1 failure,
-`2` config/usage error), so a failed validation shows as a failed run.
+job's exit status is the validator's exit code — `0` when a report was produced
+(PASS *or* FAIL verdict), `2` only when the validator couldn't run (config/usage
+error). A FAIL verdict therefore shows as a *succeeded* Render run; the caller
+reads the verdict from `summary.verdict` in the JSON report or the sink row.
 
 See `docs/superpowers/specs/2026-05-24-oba-validator-design.md` for the validator
 design and `docs/superpowers/specs/2026-05-25-render-deployment-design.md` for the

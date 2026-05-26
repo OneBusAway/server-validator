@@ -31,10 +31,12 @@ func (r Report) Worst() Status {
 	return worst
 }
 
-// ExitCode is 1 if any result failed, else 0.
+// ExitCode is always 0 once a report has been produced. A FAIL verdict is
+// reported via Worst() and the JSON document's summary.verdict; the process
+// exit code is reserved for "the validator could not run" (config error in
+// main.go returns 2). This keeps the Render cron status green when the
+// validator successfully evaluated the OBA server, even if checks failed —
+// callers read the verdict from the result-sink row.
 func (r Report) ExitCode() int {
-	if r.Worst() == Fail {
-		return 1
-	}
 	return 0
 }
