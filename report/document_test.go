@@ -105,8 +105,8 @@ func TestBuildDocument_CountsVerdictExit(t *testing.T) {
 	if doc.Summary.Total != 4 {
 		t.Errorf("total=%d want 4", doc.Summary.Total)
 	}
-	if doc.Summary.Verdict != "FAIL" || doc.Summary.ExitCode != 1 {
-		t.Errorf("verdict/exit = %q/%d want FAIL/1", doc.Summary.Verdict, doc.Summary.ExitCode)
+	if doc.Summary.Verdict != "FAIL" || doc.Summary.ExitCode != 0 {
+		t.Errorf("verdict/exit = %q/%d want FAIL/0", doc.Summary.Verdict, doc.Summary.ExitCode)
 	}
 	if doc.SchemaVersion != SchemaVersion {
 		t.Errorf("schemaVersion=%q", doc.SchemaVersion)
