@@ -16,6 +16,7 @@ package sink
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -45,6 +46,17 @@ var allowedTables = map[string]bool{
 	"oba_validator_results": true,
 }
 
+// allowedTableNames returns the sorted list of allowed table names so error
+// messages stay in sync with the allowedTables map (the single source of truth).
+func allowedTableNames() []string {
+	names := make([]string, 0, len(allowedTables))
+	for k := range allowedTables {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Validate returns nil when the sink is disabled (Configured() == false) or
 // when all five fields are present AND result_table is on the allow-list.
 // Otherwise it returns a descriptive error naming the first offending field.
@@ -70,7 +82,8 @@ func (c Config) Validate() error {
 		}
 	}
 	if !allowedTables[c.ResultTable] {
-		return fmt.Errorf("result sink: unsupported result_table %q (allowed: oba_validator_results)", c.ResultTable)
+		return fmt.Errorf("result sink: unsupported result_table %q (allowed: %s)",
+			c.ResultTable, strings.Join(allowedTableNames(), ", "))
 	}
 	return nil
 }

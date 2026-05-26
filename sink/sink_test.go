@@ -53,9 +53,9 @@ func TestValidate(t *testing.T) {
 	})
 
 	missingFields := []struct {
-		name  string
+		name   string
 		mutate func(*Config)
-		want  string
+		want   string
 	}{
 		{"db_user", func(c *Config) { c.DBUser = "" }, "db_user"},
 		{"db_pass", func(c *Config) { c.DBPass = "" }, "db_pass"},
