@@ -17,6 +17,7 @@ package sink
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -114,10 +115,18 @@ ON CONFLICT (correlation_id) DO NOTHING`
 // hang on bad creds or a misconfigured DB.
 const statementTimeoutSQL = `SET statement_timeout = '5s'`
 
-// redactErr returns an error whose message has DBPass replaced with "***", so
-// connection errors that echo the DSN (pgx sometimes does) cannot leak the
-// password. apiKey redaction is handled upstream by the existing report/error
-// pipeline; this redacts only the sink's own secret.
+// redactErr returns an error whose message has DBPass replaced with "***" so
+// pgx errors that echo the DSN cannot leak the password. The raw password is
+// scrubbed first, then the URL-encoded form (normalizeDSN injects credentials
+// via url.UserPassword which percent-encodes special characters) — a belt-and-
+// suspenders second layer in case a future pgx error type echoes the DSN.
+//
+// Returns a fresh non-wrapping error so errors.Unwrap cannot recover the
+// original un-redacted cause.
+//
+// Validate's own errors are static templates that never contain DBPass and
+// intentionally bypass redactErr; if a future Validate path interpolates
+// caller-controlled data, route it through this helper too.
 func (c Config) redactErr(err error) error {
 	if err == nil {
 		return nil
@@ -125,6 +134,9 @@ func (c Config) redactErr(err error) error {
 	s := err.Error()
 	if c.DBPass != "" {
 		s = strings.ReplaceAll(s, c.DBPass, "***")
+		if enc := url.QueryEscape(c.DBPass); enc != c.DBPass {
+			s = strings.ReplaceAll(s, enc, "***")
+		}
 	}
 	return fmt.Errorf("%s", s)
 }
