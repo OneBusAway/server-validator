@@ -36,6 +36,11 @@ error. Warnings and skips do not affect the exit code.
 variable. `agencyMapping` (optional, per data source) maps each GTFS `agency_id`
 to the `agencyId` the OBA server exposes; unmapped agencies default to identity.
 
+Five optional top-level fields (`db_url`, `db_user`, `db_pass`, `correlation_id`,
+`result_table`) activate the result sink described under [Reading the result from
+a database](#reading-the-result-from-a-database) below; when absent the validator
+behaves exactly as today.
+
 ## Library
 
 ```go
@@ -120,3 +125,32 @@ job's exit status is the validator's exit code (`0` no failures, `1` ≥1 failur
 See `docs/superpowers/specs/2026-05-24-oba-validator-design.md` for the validator
 design and `docs/superpowers/specs/2026-05-25-render-deployment-design.md` for the
 deployment design.
+
+### Reading the result from a database
+
+When the validator runs as a Render one-off job, the job status exposes whether
+it succeeded but not the report itself. To let a caller (e.g. obacloud's
+`ServerValidationJob`) read the report back without scraping stdout, supply five
+additional fields in the same JSON payload and the validator will write one row
+to a Postgres "results" table after stdout, keyed by `correlation_id`:
+
+| Field | Description |
+|---|---|
+| `db_url` | JDBC-style URL, e.g. `jdbc:postgresql://host:5432/dbname`. Activates the sink when non-blank. |
+| `db_user` / `db_pass` | DB credentials. |
+| `correlation_id` | UUID the caller chooses; row key. |
+| `result_table` | Table name. Must be `oba_validator_results` (allow-listed). |
+
+The validator creates the table on first write (`CREATE TABLE IF NOT EXISTS`)
+with columns `correlation_id TEXT PRIMARY KEY, status TEXT NOT NULL, result_data
+TEXT, error_message TEXT`, then `INSERT ... ON CONFLICT (correlation_id) DO
+NOTHING` — so retries are idempotent.
+
+Behavior is purely additive: when `db_url` is absent the validator behaves
+exactly as today. A row is always written after stdout, with `status="completed"`
+for both PASS and FAIL verdicts (the verdict lives at `summary.verdict` inside
+`result_data`) and `status="error"` reserved for the `errorDocument` variant.
+Sink failures are logged to stderr but never change the exit code.
+
+See `docs/superpowers/specs/2026-05-25-result-sink-design.md` for the full
+contract.
