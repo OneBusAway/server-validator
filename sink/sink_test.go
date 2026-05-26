@@ -85,3 +85,90 @@ func TestValidate(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeDSN(t *testing.T) {
+	cases := []struct {
+		name, raw, user, pass string
+		// substring assertions — DSN ordering of query params is not guaranteed
+		// across url.URL.Query().Encode() implementations, so check pieces.
+		mustContain    []string
+		mustNotContain []string
+		wantErr        bool
+	}{
+		{
+			name: "jdbc prefix stripped, userinfo injected, defaults applied",
+			raw:  "jdbc:postgresql://db.internal:5432/oba",
+			user: "obauser",
+			pass: "p@ss/word",
+			mustContain: []string{
+				"postgresql://",
+				"obauser:",
+				"@db.internal:5432/oba",
+				"sslmode=require",
+				"connect_timeout=5",
+			},
+			mustNotContain: []string{"jdbc:"},
+		},
+		{
+			name:        "no jdbc prefix is fine",
+			raw:         "postgresql://h:5432/d",
+			user:        "u",
+			pass:        "p",
+			mustContain: []string{"postgresql://u:p@h:5432/d", "sslmode=require"},
+		},
+		{
+			name:           "caller-specified sslmode is preserved",
+			raw:            "jdbc:postgresql://h/d?sslmode=disable",
+			user:           "u",
+			pass:           "p",
+			mustContain:    []string{"sslmode=disable"},
+			mustNotContain: []string{"sslmode=require"},
+		},
+		{
+			name:           "caller-specified connect_timeout is preserved",
+			raw:            "jdbc:postgresql://h/d?connect_timeout=15",
+			user:           "u",
+			pass:           "p",
+			mustContain:    []string{"connect_timeout=15"},
+			mustNotContain: []string{"connect_timeout=5"},
+		},
+		{
+			name:    "garbage URL fails",
+			raw:     "://nope",
+			user:    "u",
+			pass:    "p",
+			wantErr: true,
+		},
+		{
+			name:    "empty url fails",
+			raw:     "",
+			user:    "u",
+			pass:    "p",
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeDSN(tc.raw, tc.user, tc.pass)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, s := range tc.mustContain {
+				if !strings.Contains(got, s) {
+					t.Errorf("DSN %q missing %q", got, s)
+				}
+			}
+			for _, s := range tc.mustNotContain {
+				if strings.Contains(got, s) {
+					t.Errorf("DSN %q should not contain %q", got, s)
+				}
+			}
+		})
+	}
+}
