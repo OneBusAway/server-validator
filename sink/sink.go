@@ -15,9 +15,12 @@
 package sink
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Config holds the five invocation inputs that activate the sink. All five must
@@ -84,6 +87,92 @@ func (c Config) Validate() error {
 	if !allowedTables[c.ResultTable] {
 		return fmt.Errorf("result sink: unsupported result_table %q (allowed: %s)",
 			c.ResultTable, strings.Join(allowedTableNames(), ", "))
+	}
+	return nil
+}
+
+// createTableSQL is parameterized by table name. The table name MUST come from
+// the allow-list (see Validate) — never interpolate a caller-controlled string.
+// Column shape is fixed by obacloud's reader (ObaDatabase::FetchResult); do not
+// add columns without coordinating across both repos.
+const createTableSQL = `CREATE TABLE IF NOT EXISTS %s (
+  correlation_id TEXT PRIMARY KEY,
+  status         TEXT NOT NULL,
+  result_data    TEXT,
+  error_message  TEXT
+)`
+
+// insertRowSQL uses ON CONFLICT DO NOTHING to keep the contract idempotent
+// under retry without overwriting earlier writes. The table name is filled in
+// from the allow-list at call time.
+const insertRowSQL = `INSERT INTO %s (correlation_id, status, result_data, error_message)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (correlation_id) DO NOTHING`
+
+// statementTimeoutSQL caps individual statement execution at 5s, matching
+// obacloud's ObaDatabase::FetchResult. Anything longer makes the validator
+// hang on bad creds or a misconfigured DB.
+const statementTimeoutSQL = `SET statement_timeout = '5s'`
+
+// redactErr returns an error whose message has DBPass replaced with "***", so
+// connection errors that echo the DSN (pgx sometimes does) cannot leak the
+// password. apiKey redaction is handled upstream by the existing report/error
+// pipeline; this redacts only the sink's own secret.
+func (c Config) redactErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	s := err.Error()
+	if c.DBPass != "" {
+		s = strings.ReplaceAll(s, c.DBPass, "***")
+	}
+	return fmt.Errorf("%s", s)
+}
+
+// Write opens a single pgx connection to the configured Postgres, creates the
+// table if it doesn't exist, and inserts one row keyed by CorrelationID. The
+// status arg is "completed" or "error" (see package doc); resultData is the
+// report JSON (empty on the error path); errorMessage is the cause (empty on
+// the success path).
+//
+// Write is intentionally called AFTER stdout has been written by the caller —
+// a DB error here must never prevent the report from reaching Render logs.
+// The returned error is redacted (DBPass replaced with "***") so callers can
+// safely log it to stderr.
+func (c Config) Write(ctx context.Context, status, resultData, errorMessage string) error {
+	if !c.Configured() {
+		return fmt.Errorf("sink: Write called on unconfigured Config (programming error)")
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	// validateTable runs again here as defense in depth: Validate ran at
+	// config-load time, but Write is also exported and may be called by tests
+	// or future call sites that bypass the config pipeline.
+	if !allowedTables[c.ResultTable] {
+		return fmt.Errorf("result sink: unsupported result_table %q", c.ResultTable)
+	}
+
+	dsn, err := normalizeDSN(c.DBURL, c.DBUser, c.DBPass)
+	if err != nil {
+		return c.redactErr(err)
+	}
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return c.redactErr(fmt.Errorf("connect: %w", err))
+	}
+	defer conn.Close(ctx)
+
+	if _, err := conn.Exec(ctx, statementTimeoutSQL); err != nil {
+		return c.redactErr(fmt.Errorf("set statement_timeout: %w", err))
+	}
+	if _, err := conn.Exec(ctx, fmt.Sprintf(createTableSQL, c.ResultTable)); err != nil {
+		return c.redactErr(fmt.Errorf("create table: %w", err))
+	}
+	if _, err := conn.Exec(ctx, fmt.Sprintf(insertRowSQL, c.ResultTable),
+		c.CorrelationID, status, resultData, errorMessage); err != nil {
+		return c.redactErr(fmt.Errorf("insert row: %w", err))
 	}
 	return nil
 }
