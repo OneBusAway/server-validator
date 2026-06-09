@@ -18,13 +18,31 @@ func TestFetchRealtimeAlwaysHitsNetwork(t *testing.T) {
 	defer srv.Close()
 	f := NewFetcher(srv.Client(), NewCache(t.TempDir(), time.Hour), false, false)
 	for i := 0; i < 2; i++ {
-		b, err := f.FetchRealtime(context.Background(), srv.URL)
+		b, err := f.FetchRealtime(context.Background(), srv.URL, nil)
 		if err != nil || string(b) != "rt" {
 			t.Fatalf("got %q err %v", b, err)
 		}
 	}
 	if hits != 2 {
 		t.Errorf("realtime hits=%d want 2 (never cached)", hits)
+	}
+}
+
+func TestFetchRealtimeSendsHeaders(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte("rt"))
+	}))
+	defer srv.Close()
+	f := NewFetcher(srv.Client(), NewCache(t.TempDir(), time.Hour), false, false)
+	hdr := http.Header{}
+	hdr.Set("Authorization", "secret-key")
+	if _, err := f.FetchRealtime(context.Background(), srv.URL, hdr); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "secret-key" {
+		t.Errorf("Authorization header = %q, want secret-key", gotAuth)
 	}
 }
 
