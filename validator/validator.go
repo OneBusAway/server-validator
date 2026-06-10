@@ -105,6 +105,11 @@ func prepare(ctx context.Context, cfg config.Config) (*ValidationContext, error)
 			}()
 		}
 
+		rtHeaders := http.Header{}
+		for k, v := range ds.RealtimeHeaders {
+			rtHeaders.Set(k, v)
+		}
+
 		rt := func(feedName, url string, assign func(r *realtimeResult)) {
 			if url == "" {
 				return
@@ -114,7 +119,7 @@ func prepare(ctx context.Context, cfg config.Config) (*ValidationContext, error)
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				b, err := fetcher.FetchRealtime(ctx, url)
+				b, err := fetcher.FetchRealtime(ctx, url, rtHeaders)
 				if err == nil {
 					parsed := &realtimeResult{}
 					parsed.rt, err = feeds.ParseRealtime(b)

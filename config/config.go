@@ -16,6 +16,11 @@ type DataSource struct {
 	TripUpdatesURL      string            `json:"tripUpdatesURL"`
 	ServiceAlertsURL    string            `json:"serviceAlertsURL"`
 	AgencyMapping       map[string]string `json:"agencyMapping"`
+	// RealtimeHeaders are sent on every GTFS-RT request for this source (the
+	// vehicle-positions, trip-updates, and service-alerts feeds). Used to
+	// authenticate to protected feeds, e.g. {"Authorization": "<key>"} for
+	// Swiftly. The static GTFS feed is fetched without these headers.
+	RealtimeHeaders map[string]string `json:"realtimeHeaders,omitempty"`
 }
 
 // Config is the full validator configuration. Runtime-only fields (NoCache,

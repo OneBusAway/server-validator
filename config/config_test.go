@@ -29,6 +29,16 @@ func TestLoadFromRawJSONAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadParsesRealtimeHeaders(t *testing.T) {
+	cfg, err := Load(`{"obaServerURL":"https://x","apiKey":"k","dataSources":[{"staticGtfsFeedURL":"u","realtimeHeaders":{"Authorization":"feed-key"}}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.DataSources[0].RealtimeHeaders["Authorization"]; got != "feed-key" {
+		t.Errorf("RealtimeHeaders[Authorization] = %q, want feed-key", got)
+	}
+}
+
 func TestLoadFromFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "c.json")

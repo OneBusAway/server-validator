@@ -34,9 +34,11 @@ func (f *Fetcher) get(ctx context.Context, url string, hdr http.Header) (*http.R
 	return f.client.Do(req)
 }
 
-// FetchRealtime always performs a fresh GET (no caching).
-func (f *Fetcher) FetchRealtime(ctx context.Context, url string) ([]byte, error) {
-	resp, err := f.get(ctx, url, nil)
+// FetchRealtime always performs a fresh GET (no caching). hdr carries any
+// per-feed auth headers (e.g. an Authorization key for a protected RT feed);
+// pass nil when none are needed.
+func (f *Fetcher) FetchRealtime(ctx context.Context, url string, hdr http.Header) ([]byte, error) {
+	resp, err := f.get(ctx, url, hdr)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +52,7 @@ func (f *Fetcher) FetchRealtime(ctx context.Context, url string) ([]byte, error)
 // FetchStatic returns the static feed bytes, using the conditional-GET cache.
 func (f *Fetcher) FetchStatic(ctx context.Context, url string) ([]byte, error) {
 	if f.noCache || f.cache == nil {
-		return f.FetchRealtime(ctx, url)
+		return f.FetchRealtime(ctx, url, nil)
 	}
 	k := key(url)
 	mu := f.cache.lockFor(k)
