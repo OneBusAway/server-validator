@@ -32,7 +32,9 @@ func TestFetchRealtimeSendsHeaders(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		w.Write([]byte("rt"))
+		if _, err := w.Write([]byte("rt")); err != nil {
+			t.Errorf("write failed: %v", err)
+		}
 	}))
 	defer srv.Close()
 	f := NewFetcher(srv.Client(), NewCache(t.TempDir(), time.Hour), false, false)

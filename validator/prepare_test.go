@@ -48,7 +48,11 @@ func TestPrepareSendsRealtimeAuthHeaders(t *testing.T) {
 	if auth["/vp"] != "secret-rt-key" {
 		t.Errorf("vehiclePositions Authorization = %q, want secret-rt-key", auth["/vp"])
 	}
-	if auth["/static"] != "" {
-		t.Errorf("static feed Authorization = %q, want empty (credential must not leak to the bundle host)", auth["/static"])
+	staticAuth, staticHit := auth["/static"]
+	if !staticHit {
+		t.Fatal("static feed was never requested; the empty-Authorization assertion below would pass vacuously")
+	}
+	if staticAuth != "" {
+		t.Errorf("static feed Authorization = %q, want empty (credential must not leak to the bundle host)", staticAuth)
 	}
 }
